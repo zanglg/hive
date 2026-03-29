@@ -106,10 +106,18 @@ fn installs_archive_into_versioned_package_store() {
 
     let bytes = fs::read(&archive_path).unwrap();
     let checksum = format!("sha256:{:x}", Sha256::digest(bytes));
+    let declared_binaries = vec!["rg".to_string()];
 
     let installer = Installer::new(temp.path().join("pkgs"));
     let install_dir = installer
-        .install_archive("rg", "14.1.0", &archive_path, &checksum, ArchiveKind::TarGz)
+        .install_archive(
+            "rg",
+            "14.1.0",
+            &archive_path,
+            &checksum,
+            ArchiveKind::TarGz,
+            &declared_binaries,
+        )
         .unwrap();
 
     assert!(install_dir.join("rg").exists());
@@ -126,10 +134,18 @@ fn install_strips_single_wrapper_directory_before_validating_binaries() {
 
     let bytes = fs::read(&archive_path).unwrap();
     let checksum = format!("sha256:{:x}", Sha256::digest(bytes));
+    let declared_binaries = vec!["bin/gh".to_string()];
 
     let installer = Installer::new(temp.path().join("pkgs"));
     let install_dir = installer
-        .install_archive("gh", "2.0.0", &archive_path, &checksum, ArchiveKind::TarGz)
+        .install_archive(
+            "gh",
+            "2.0.0",
+            &archive_path,
+            &checksum,
+            ArchiveKind::TarGz,
+            &declared_binaries,
+        )
         .unwrap();
 
     assert!(install_dir.join("bin/gh").exists());
@@ -137,24 +153,32 @@ fn install_strips_single_wrapper_directory_before_validating_binaries() {
 }
 
 #[test]
-fn install_keeps_nested_bin_layout_unchanged() {
+fn install_keeps_single_wrapper_directory_unchanged_when_declared_binaries_are_missing() {
     let temp = tempdir().unwrap();
     let archive_path = temp.path().join("gh.tar.gz");
     let source_dir = temp.path().join("source");
-    fs::create_dir_all(source_dir.join("bin")).unwrap();
-    fs::write(source_dir.join("bin/gh"), "stub-binary").unwrap();
-    tests_support::write_tar_gz(&archive_path, &source_dir, "bin/gh");
+    fs::create_dir_all(source_dir.join("share")).unwrap();
+    fs::write(source_dir.join("share/notes.txt"), "docs").unwrap();
+    tests_support::write_tar_gz_with_wrapper(&archive_path, &source_dir, "release");
 
     let bytes = fs::read(&archive_path).unwrap();
     let checksum = format!("sha256:{:x}", Sha256::digest(bytes));
+    let declared_binaries = vec!["bin/gh".to_string()];
 
     let installer = Installer::new(temp.path().join("pkgs"));
     let install_dir = installer
-        .install_archive("gh", "2.0.0", &archive_path, &checksum, ArchiveKind::TarGz)
+        .install_archive(
+            "gh",
+            "2.0.0",
+            &archive_path,
+            &checksum,
+            ArchiveKind::TarGz,
+            &declared_binaries,
+        )
         .unwrap();
 
-    assert!(install_dir.join("bin/gh").exists());
-    assert!(!install_dir.join("gh").exists());
+    assert!(install_dir.join("release/share/notes.txt").exists());
+    assert!(!install_dir.join("share/notes.txt").exists());
 }
 
 #[test]
@@ -168,10 +192,18 @@ fn install_does_not_treat_symlink_to_directory_as_wrapper_directory() {
 
     let bytes = fs::read(&archive_path).unwrap();
     let checksum = format!("sha256:{:x}", Sha256::digest(bytes));
+    let declared_binaries = vec!["rg".to_string()];
 
     let installer = Installer::new(temp.path().join("pkgs"));
     let install_dir = installer
-        .install_archive("rg", "14.1.0", &archive_path, &checksum, ArchiveKind::TarGz)
+        .install_archive(
+            "rg",
+            "14.1.0",
+            &archive_path,
+            &checksum,
+            ArchiveKind::TarGz,
+            &declared_binaries,
+        )
         .unwrap();
 
     assert!(payload_dir.join("rg").exists());
@@ -207,10 +239,18 @@ fn install_keeps_flat_archive_layout_unchanged() {
 
     let bytes = fs::read(&archive_path).unwrap();
     let checksum = format!("sha256:{:x}", Sha256::digest(bytes));
+    let declared_binaries = vec!["rg".to_string()];
 
     let installer = Installer::new(temp.path().join("pkgs"));
     let install_dir = installer
-        .install_archive("rg", "14.1.0", &archive_path, &checksum, ArchiveKind::TarGz)
+        .install_archive(
+            "rg",
+            "14.1.0",
+            &archive_path,
+            &checksum,
+            ArchiveKind::TarGz,
+            &declared_binaries,
+        )
         .unwrap();
 
     assert!(install_dir.join("rg").exists());
