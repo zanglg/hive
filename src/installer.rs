@@ -36,6 +36,7 @@ impl Installer {
         archive_path: &Path,
         checksum: &str,
         archive_kind: ArchiveKind,
+        declared_binaries: &[String],
     ) -> Result<PathBuf, String> {
         let bytes = fs::read(archive_path)
             .map_err(|error| format!("failed to read {}: {error}", archive_path.display()))?;
@@ -82,7 +83,7 @@ impl Installer {
             return Err(error);
         }
 
-        if let Err(error) = normalize_extracted_layout(&temp_dir) {
+        if let Err(error) = normalize_extracted_layout(&temp_dir, declared_binaries) {
             let _ = fs::remove_dir_all(&temp_dir);
             return Err(error);
         }
@@ -99,11 +100,15 @@ impl Installer {
     }
 }
 
-fn normalize_extracted_layout(temp_dir: &Path) -> Result<(), String> {
+fn normalize_extracted_layout(temp_dir: &Path, declared_binaries: &[String]) -> Result<(), String> {
     let mut entries = fs::read_dir(temp_dir)
         .map_err(|error| format!("failed to inspect {}: {error}", temp_dir.display()))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("failed to inspect {}: {error}", temp_dir.display()))?;
+
+    if binaries_exist_under(temp_dir, declared_binaries)? {
+        return Ok(());
+    }
 
     if entries.len() != 1 {
         return Ok(());
@@ -118,7 +123,7 @@ fn normalize_extracted_layout(temp_dir: &Path) -> Result<(), String> {
     }
 
     let entry_path = entry.path();
-    if contains_direct_regular_file(&entry_path)? {
+    if !binaries_exist_under(&entry_path, declared_binaries)? {
         return Ok(());
     }
 
@@ -145,18 +150,12 @@ fn normalize_extracted_layout(temp_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn contains_direct_regular_file(dir: &Path) -> Result<bool, String> {
-    for entry in fs::read_dir(dir)
-        .map_err(|error| format!("failed to inspect {}: {error}", dir.display()))?
-    {
-        let entry = entry.map_err(|error| format!("failed to inspect {}: {error}", dir.display()))?;
-        let file_type = entry
-            .file_type()
-            .map_err(|error| format!("failed to inspect {}: {error}", dir.display()))?;
-        if file_type.is_file() {
-            return Ok(true);
+fn binaries_exist_under(dir: &Path, declared_binaries: &[String]) -> Result<bool, String> {
+    for binary in declared_binaries {
+        if !dir.join(binary).exists() {
+            return Ok(false);
         }
     }
 
-    Ok(false)
+    Ok(true)
 }

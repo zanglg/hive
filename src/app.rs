@@ -94,6 +94,7 @@ fn install_package(paths: &HivePaths, package: &str) -> Result<(), String> {
         &download_path,
         &artifact.checksum,
         archive_kind,
+        &artifact.binaries,
     )?;
 
     let exported = match artifact
