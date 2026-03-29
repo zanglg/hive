@@ -8,6 +8,7 @@ use hive::{
 use sha2::{Digest, Sha256};
 use std::{
     fs,
+    io,
     path::{Path, PathBuf},
 };
 use tar::Builder;
@@ -31,6 +32,26 @@ pub fn write_tar_gz_with_wrapper(
     let encoder = GzEncoder::new(tar_gz, Compression::default());
     let mut builder = Builder::new(encoder);
     builder.append_dir_all(wrapper_dir, source_dir).unwrap();
+    builder.into_inner().unwrap().finish().unwrap();
+}
+
+pub fn write_tar_gz_with_symlink(
+    archive_path: &Path,
+    link_path: &str,
+    link_target: &Path,
+) {
+    let tar_gz = fs::File::create(archive_path).unwrap();
+    let encoder = GzEncoder::new(tar_gz, Compression::default());
+    let mut builder = Builder::new(encoder);
+    let mut header = tar::Header::new_gnu();
+    header.set_size(0);
+    header.set_entry_type(tar::EntryType::Symlink);
+    header.set_link_name(link_target).unwrap();
+    header.set_mode(0o777);
+    header.set_cksum();
+    builder
+        .append_data(&mut header, link_path, io::empty())
+        .unwrap();
     builder.into_inner().unwrap().finish().unwrap();
 }
 
