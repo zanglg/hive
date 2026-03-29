@@ -82,7 +82,7 @@ impl Installer {
             return Err(error);
         }
 
-        if let Err(error) = normalize_extracted_layout(&temp_dir) {
+        if let Err(error) = normalize_extracted_layout(&temp_dir, package, version) {
             let _ = fs::remove_dir_all(&temp_dir);
             return Err(error);
         }
@@ -99,7 +99,7 @@ impl Installer {
     }
 }
 
-fn normalize_extracted_layout(temp_dir: &Path) -> Result<(), String> {
+fn normalize_extracted_layout(temp_dir: &Path, package: &str, version: &str) -> Result<(), String> {
     let mut entries = fs::read_dir(temp_dir)
         .map_err(|error| format!("failed to inspect {}: {error}", temp_dir.display()))?
         .collect::<Result<Vec<_>, _>>()
@@ -110,11 +110,19 @@ fn normalize_extracted_layout(temp_dir: &Path) -> Result<(), String> {
     }
 
     let entry = entries.pop().unwrap();
-    let entry_path = entry.path();
-    if !entry_path.is_dir() {
+    let entry_name = entry.file_name();
+    if entry_name.to_string_lossy() != format!("{package}-{version}") {
         return Ok(());
     }
 
+    let entry_file_type = entry
+        .file_type()
+        .map_err(|error| format!("failed to inspect {}: {error}", temp_dir.display()))?;
+    if !entry_file_type.is_dir() {
+        return Ok(());
+    }
+
+    let entry_path = entry.path();
     for child in fs::read_dir(&entry_path)
         .map_err(|error| format!("failed to inspect {}: {error}", entry_path.display()))?
     {
