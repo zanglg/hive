@@ -1,0 +1,8 @@
+name = "rg"
+version = "14.1.0"
+
+[platform.linux-x86_64]
+url = "https://example.invalid/another-rg.tar.gz"
+checksum = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+archive = "tar.gz"
+binaries = ["rg"]
