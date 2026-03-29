@@ -137,6 +137,56 @@ fn install_strips_single_wrapper_directory_before_validating_binaries() {
 }
 
 #[test]
+fn install_keeps_nested_bin_layout_unchanged() {
+    let temp = tempdir().unwrap();
+    let archive_path = temp.path().join("gh.tar.gz");
+    let source_dir = temp.path().join("source");
+    fs::create_dir_all(source_dir.join("bin")).unwrap();
+    fs::write(source_dir.join("bin/gh"), "stub-binary").unwrap();
+    tests_support::write_tar_gz(&archive_path, &source_dir, "bin/gh");
+
+    let bytes = fs::read(&archive_path).unwrap();
+    let checksum = format!("sha256:{:x}", Sha256::digest(bytes));
+
+    let installer = Installer::new(temp.path().join("pkgs"));
+    let install_dir = installer
+        .install_archive("gh", "2.0.0", &archive_path, &checksum, ArchiveKind::TarGz)
+        .unwrap();
+
+    assert!(install_dir.join("bin/gh").exists());
+    assert!(!install_dir.join("gh").exists());
+}
+
+#[test]
+fn install_does_not_treat_symlink_to_directory_as_wrapper_directory() {
+    let temp = tempdir().unwrap();
+    let archive_path = temp.path().join("rg.tar.gz");
+    let payload_dir = temp.path().join("payload");
+    fs::create_dir_all(&payload_dir).unwrap();
+    fs::write(payload_dir.join("rg"), "stub-binary").unwrap();
+    tests_support::write_tar_gz_with_symlink(&archive_path, "rg-14.1.0", &payload_dir);
+
+    let bytes = fs::read(&archive_path).unwrap();
+    let checksum = format!("sha256:{:x}", Sha256::digest(bytes));
+
+    let installer = Installer::new(temp.path().join("pkgs"));
+    let install_dir = installer
+        .install_archive("rg", "14.1.0", &archive_path, &checksum, ArchiveKind::TarGz)
+        .unwrap();
+
+    assert!(payload_dir.join("rg").exists());
+    assert!(
+        install_dir
+            .join("rg-14.1.0")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(!install_dir.join("rg").exists());
+}
+
+#[test]
 fn install_keeps_flat_archive_layout_unchanged() {
     let temp = tempdir().unwrap();
     let archive_path = temp.path().join("rg.tar.gz");
