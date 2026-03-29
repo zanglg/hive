@@ -1,0 +1,14 @@
+name = "rg"
+version = "14.1.0"
+
+[platform.linux-x86_64]
+url = "https://example.invalid/rg-14.1.0-x86_64.tar.gz"
+checksum = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+archive = "tar.gz"
+binaries = ["rg"]
+
+[platform.macos-aarch64]
+url = "https://example.invalid/rg-14.1.0-aarch64.tar.gz"
+checksum = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+archive = "tar.gz"
+binaries = ["rg"]
