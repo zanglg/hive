@@ -3,6 +3,7 @@ mod tests_support;
 
 use clap::Parser;
 use hive::{app, cli::Cli};
+use std::fs;
 use tempfile::tempdir;
 
 #[test]
@@ -28,4 +29,38 @@ fn uninstall_removes_non_active_version() {
     app::run_with_paths(cli, paths.clone()).unwrap();
 
     assert!(!paths.package_store.join("rg/14.0.0").exists());
+}
+
+#[test]
+fn forced_uninstall_removes_active_exported_shims() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_installed_package_with_binaries(
+        &paths,
+        "ripgrep",
+        &["14.1.0"],
+        "14.1.0",
+        &["rg", "rga"],
+    );
+
+    fs::create_dir_all(&paths.shim_dir).unwrap();
+    std::os::unix::fs::symlink(
+        paths.package_store.join("ripgrep/14.1.0/rg"),
+        paths.shim_dir.join("rg"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        paths.package_store.join("ripgrep/14.1.0/rga"),
+        paths.shim_dir.join("rga"),
+    )
+    .unwrap();
+    assert!(paths.shim_dir.join("rg").symlink_metadata().is_ok());
+    assert!(paths.shim_dir.join("rga").symlink_metadata().is_ok());
+
+    let cli = Cli::try_parse_from(["hive", "uninstall", "ripgrep", "14.1.0", "--force"]).unwrap();
+    app::run_with_paths(cli, paths.clone()).unwrap();
+
+    assert!(!paths.package_store.join("ripgrep/14.1.0").exists());
+    assert!(paths.shim_dir.join("rg").symlink_metadata().is_err());
+    assert!(paths.shim_dir.join("rga").symlink_metadata().is_err());
 }

@@ -99,6 +99,45 @@ pub fn seed_installed_package(paths: &HivePaths, package: &str, versions: &[&str
         .unwrap();
 }
 
+pub fn seed_installed_package_with_binaries(
+    paths: &HivePaths,
+    package: &str,
+    versions: &[&str],
+    active: &str,
+    binary_names: &[&str],
+) {
+    for version in versions {
+        let install_dir = paths.package_store.join(package).join(version);
+        fs::create_dir_all(&install_dir).unwrap();
+        for binary_name in binary_names {
+            fs::write(
+                install_dir.join(binary_name),
+                format!("binary-{version}-{binary_name}"),
+            )
+            .unwrap();
+        }
+    }
+
+    let manifest_version = versions.last().unwrap().to_string();
+    write_manifest_with_binaries(
+        paths,
+        package,
+        &manifest_version,
+        &PathBuf::from("/tmp/unused.tar.gz"),
+        "sha256:unused",
+        binary_names,
+    );
+
+    let store = StateStore::new(paths.state_dir.clone());
+    store
+        .save_package(&InstalledPackage {
+            name: package.into(),
+            versions: versions.iter().map(|value| value.to_string()).collect(),
+            active: Some(active.into()),
+        })
+        .unwrap();
+}
+
 fn write_manifest(
     paths: &HivePaths,
     package: &str,
@@ -107,13 +146,36 @@ fn write_manifest(
     checksum: &str,
     binary_name: &str,
 ) {
+    write_manifest_with_binaries(
+        paths,
+        package,
+        version,
+        archive_path,
+        checksum,
+        &[binary_name],
+    );
+}
+
+fn write_manifest_with_binaries(
+    paths: &HivePaths,
+    package: &str,
+    version: &str,
+    archive_path: &Path,
+    checksum: &str,
+    binary_names: &[&str],
+) {
     fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
     fs::write(
         paths.manifest_dirs[0].join(format!("{package}.toml")),
         format!(
-            "name = \"{package}\"\nversion = \"{version}\"\n\n[platform.{platform}]\nurl = \"file://{archive}\"\nchecksum = \"{checksum}\"\narchive = \"tar.gz\"\nbinaries = [\"{binary_name}\"]\n",
+            "name = \"{package}\"\nversion = \"{version}\"\n\n[platform.{platform}]\nurl = \"file://{archive}\"\nchecksum = \"{checksum}\"\narchive = \"tar.gz\"\nbinaries = [{binaries}]\n",
             platform = current_platform_key(),
             archive = archive_path.display(),
+            binaries = binary_names
+                .iter()
+                .map(|binary_name| format!("\"{binary_name}\""))
+                .collect::<Vec<_>>()
+                .join(", "),
         ),
     )
     .unwrap();

@@ -7,7 +7,10 @@ use crate::{
     platform::Platform,
     state::{InstalledPackage, StateStore},
 };
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 pub fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
@@ -187,11 +190,7 @@ fn uninstall_package(
     }
 
     if updated.active.is_none() {
-        let link = paths.shim_dir.join(package);
-        if link.symlink_metadata().is_ok() {
-            fs::remove_file(&link)
-                .map_err(|error| format!("failed to remove {}: {error}", link.display()))?;
-        }
+        remove_shims_for_install_dir(&paths.shim_dir, &install_dir)?;
     }
 
     Ok(())
@@ -217,6 +216,29 @@ fn which_package(paths: &HivePaths, package: &str) -> Result<String, String> {
     let path = fs::read_link(paths.shim_dir.join(package))
         .map_err(|error| format!("failed to resolve shim for `{package}`: {error}"))?;
     Ok(path.display().to_string())
+}
+
+fn remove_shims_for_install_dir(shim_dir: &Path, install_dir: &Path) -> Result<(), String> {
+    if !shim_dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(shim_dir)
+        .map_err(|error| format!("failed to read {}: {error}", shim_dir.display()))?
+    {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        let target = match fs::read_link(&path) {
+            Ok(target) => target,
+            Err(_) => continue,
+        };
+
+        if target.starts_with(install_dir) {
+            fs::remove_file(&path)
+                .map_err(|error| format!("failed to remove {}: {error}", path.display()))?;
+        }
+    }
+
+    Ok(())
 }
 
 fn download_to_cache(
