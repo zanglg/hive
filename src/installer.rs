@@ -82,7 +82,7 @@ impl Installer {
             return Err(error);
         }
 
-        if let Err(error) = normalize_extracted_layout(&temp_dir, package, version) {
+        if let Err(error) = normalize_extracted_layout(&temp_dir) {
             let _ = fs::remove_dir_all(&temp_dir);
             return Err(error);
         }
@@ -99,7 +99,7 @@ impl Installer {
     }
 }
 
-fn normalize_extracted_layout(temp_dir: &Path, package: &str, version: &str) -> Result<(), String> {
+fn normalize_extracted_layout(temp_dir: &Path) -> Result<(), String> {
     let mut entries = fs::read_dir(temp_dir)
         .map_err(|error| format!("failed to inspect {}: {error}", temp_dir.display()))?
         .collect::<Result<Vec<_>, _>>()
@@ -110,11 +110,6 @@ fn normalize_extracted_layout(temp_dir: &Path, package: &str, version: &str) -> 
     }
 
     let entry = entries.pop().unwrap();
-    let entry_name = entry.file_name();
-    if entry_name.to_string_lossy() != format!("{package}-{version}") {
-        return Ok(());
-    }
-
     let entry_file_type = entry
         .file_type()
         .map_err(|error| format!("failed to inspect {}: {error}", temp_dir.display()))?;
@@ -123,6 +118,10 @@ fn normalize_extracted_layout(temp_dir: &Path, package: &str, version: &str) -> 
     }
 
     let entry_path = entry.path();
+    if contains_direct_regular_file(&entry_path)? {
+        return Ok(());
+    }
+
     for child in fs::read_dir(&entry_path)
         .map_err(|error| format!("failed to inspect {}: {error}", entry_path.display()))?
     {
@@ -144,4 +143,20 @@ fn normalize_extracted_layout(temp_dir: &Path, package: &str, version: &str) -> 
     })?;
 
     Ok(())
+}
+
+fn contains_direct_regular_file(dir: &Path) -> Result<bool, String> {
+    for entry in fs::read_dir(dir)
+        .map_err(|error| format!("failed to inspect {}: {error}", dir.display()))?
+    {
+        let entry = entry.map_err(|error| format!("failed to inspect {}: {error}", dir.display()))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("failed to inspect {}: {error}", dir.display()))?;
+        if file_type.is_file() {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
