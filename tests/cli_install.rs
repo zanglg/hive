@@ -116,6 +116,58 @@ fn installs_archive_into_versioned_package_store() {
 }
 
 #[test]
+fn install_strips_single_wrapper_directory_before_validating_binaries() {
+    let temp = tempdir().unwrap();
+    let archive_path = temp.path().join("rg.tar.gz");
+    let source_dir = temp.path().join("source");
+    fs::create_dir_all(&source_dir).unwrap();
+    fs::write(source_dir.join("rg"), "stub-binary").unwrap();
+    tests_support::write_tar_gz_with_wrapper(&archive_path, &source_dir, "rg-14.1.0");
+
+    let bytes = fs::read(&archive_path).unwrap();
+    let checksum = format!("sha256:{:x}", Sha256::digest(bytes));
+
+    let installer = Installer::new(temp.path().join("pkgs"));
+    let install_dir = installer
+        .install_archive("rg", "14.1.0", &archive_path, &checksum, ArchiveKind::TarGz)
+        .unwrap();
+
+    assert!(install_dir.join("rg").exists());
+    assert!(!install_dir.join("rg-14.1.0").exists());
+}
+
+#[test]
+fn install_keeps_flat_archive_layout_unchanged() {
+    let temp = tempdir().unwrap();
+    let archive_path = temp.path().join("rg.tar.gz");
+    let source_dir = temp.path().join("source");
+    fs::create_dir_all(&source_dir).unwrap();
+    fs::write(source_dir.join("rg"), "stub-binary").unwrap();
+    fs::write(source_dir.join("README"), "docs").unwrap();
+    let tar_gz = fs::File::create(&archive_path).unwrap();
+    let encoder = flate2::write::GzEncoder::new(tar_gz, flate2::Compression::default());
+    let mut builder = tar::Builder::new(encoder);
+    builder
+        .append_path_with_name(source_dir.join("rg"), "rg")
+        .unwrap();
+    builder
+        .append_path_with_name(source_dir.join("README"), "README")
+        .unwrap();
+    builder.into_inner().unwrap().finish().unwrap();
+
+    let bytes = fs::read(&archive_path).unwrap();
+    let checksum = format!("sha256:{:x}", Sha256::digest(bytes));
+
+    let installer = Installer::new(temp.path().join("pkgs"));
+    let install_dir = installer
+        .install_archive("rg", "14.1.0", &archive_path, &checksum, ArchiveKind::TarGz)
+        .unwrap();
+
+    assert!(install_dir.join("rg").exists());
+    assert!(install_dir.join("README").exists());
+}
+
+#[test]
 fn install_command_resolves_manifest_and_activates_first_version() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());

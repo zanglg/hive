@@ -22,6 +22,18 @@ pub fn write_tar_gz(archive_path: &Path, source_dir: &Path, file_name: &str) {
     builder.into_inner().unwrap().finish().unwrap();
 }
 
+pub fn write_tar_gz_with_wrapper(
+    archive_path: &Path,
+    source_dir: &Path,
+    wrapper_dir: &str,
+) {
+    let tar_gz = fs::File::create(archive_path).unwrap();
+    let encoder = GzEncoder::new(tar_gz, Compression::default());
+    let mut builder = Builder::new(encoder);
+    builder.append_dir_all(wrapper_dir, source_dir).unwrap();
+    builder.into_inner().unwrap().finish().unwrap();
+}
+
 pub fn fixture_paths(root: &Path) -> HivePaths {
     HivePaths {
         manifest_dirs: vec![root.join("manifests")],
