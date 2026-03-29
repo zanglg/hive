@@ -82,6 +82,11 @@ impl Installer {
             return Err(error);
         }
 
+        if let Err(error) = normalize_extracted_layout(&temp_dir) {
+            let _ = fs::remove_dir_all(&temp_dir);
+            return Err(error);
+        }
+
         if install_dir.exists() {
             fs::remove_dir_all(&install_dir)
                 .map_err(|error| format!("failed to remove {}: {error}", install_dir.display()))?;
@@ -92,4 +97,43 @@ impl Installer {
             .map_err(|error| format!("failed to move install into place: {error}"))?;
         Ok(install_dir)
     }
+}
+
+fn normalize_extracted_layout(temp_dir: &Path) -> Result<(), String> {
+    let mut entries = fs::read_dir(temp_dir)
+        .map_err(|error| format!("failed to inspect {}: {error}", temp_dir.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to inspect {}: {error}", temp_dir.display()))?;
+
+    if entries.len() != 1 {
+        return Ok(());
+    }
+
+    let entry = entries.pop().unwrap();
+    let entry_path = entry.path();
+    if !entry_path.is_dir() {
+        return Ok(());
+    }
+
+    for child in fs::read_dir(&entry_path)
+        .map_err(|error| format!("failed to inspect {}: {error}", entry_path.display()))?
+    {
+        let child = child.map_err(|error| format!("failed to inspect {}: {error}", entry_path.display()))?;
+        let destination = temp_dir.join(child.file_name());
+        fs::rename(child.path(), &destination).map_err(|error| {
+            format!(
+                "failed to normalize extracted layout from {}: {error}",
+                entry_path.display()
+            )
+        })?;
+    }
+
+    fs::remove_dir(&entry_path).map_err(|error| {
+        format!(
+            "failed to remove wrapper directory {}: {error}",
+            entry_path.display()
+        )
+    })?;
+
+    Ok(())
 }
