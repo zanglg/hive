@@ -74,3 +74,35 @@ fn forced_uninstall_removes_active_exported_shims() {
     assert!(paths.shim_dir.join("rg").symlink_metadata().is_err());
     assert!(paths.shim_dir.join("rga").symlink_metadata().is_err());
 }
+
+#[test]
+fn forced_uninstall_removes_current_symlink_and_nested_binary_shims() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_installed_package_with_binaries(
+        &paths,
+        "helix",
+        &["25.07.1"],
+        "25.07.1",
+        &["bin/hx"],
+    );
+
+    std::os::unix::fs::symlink(
+        paths.package_store.join("helix/25.07.1"),
+        paths.package_store.join("helix/current"),
+    )
+    .unwrap();
+    fs::create_dir_all(&paths.shim_dir).unwrap();
+    std::os::unix::fs::symlink(
+        paths.package_store.join("helix/current/bin/hx"),
+        paths.shim_dir.join("hx"),
+    )
+    .unwrap();
+
+    let cli =
+        Cli::try_parse_from(["hive", "uninstall", "helix", "25.07.1", "--force"]).unwrap();
+    app::run_with_paths(cli, paths.clone()).unwrap();
+
+    assert!(paths.package_store.join("helix/current").symlink_metadata().is_err());
+    assert!(paths.shim_dir.join("hx").symlink_metadata().is_err());
+}

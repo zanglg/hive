@@ -198,26 +198,49 @@ fn use_command_restores_previous_activation_when_state_update_fails_after_shim_m
 }
 
 #[test]
-fn which_reports_active_binary_path_through_current() {
+fn which_reports_active_path_for_single_binary_package() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
     tests_support::seed_installed_package_with_binaries(
         &paths,
-        "rg",
-        &["14.1.0"],
-        "14.1.0",
-        &["bin/rg"],
+        "helix",
+        &["25.07.1"],
+        "25.07.1",
+        &["bin/hx"],
     );
     fs::create_dir_all(&paths.shim_dir).unwrap();
     std::os::unix::fs::symlink(
-        paths.package_store.join("rg/current/bin/rg"),
-        paths.shim_dir.join("rg"),
+        paths.package_store.join("helix/current/bin/hx"),
+        paths.shim_dir.join("hx"),
     )
     .unwrap();
 
-    let cli = Cli::try_parse_from(["hive", "which", "rg"]).unwrap();
+    let cli = Cli::try_parse_from(["hive", "which", "helix"]).unwrap();
     let output = app::run_capture(cli, paths).unwrap();
-    assert!(output.contains("rg/current/bin/rg"));
+    assert!(output.contains("helix/current/bin/hx"));
+}
+
+#[test]
+fn which_fails_for_multi_binary_package() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_installed_package_with_binaries(
+        &paths,
+        "uv",
+        &["0.11.2"],
+        "0.11.2",
+        &["uv", "uvx"],
+    );
+    fs::create_dir_all(&paths.shim_dir).unwrap();
+    std::os::unix::fs::symlink(
+        paths.package_store.join("uv/current/uv"),
+        paths.shim_dir.join("uv"),
+    )
+    .unwrap();
+
+    let cli = Cli::try_parse_from(["hive", "which", "uv"]).unwrap();
+    let error = app::run_capture(cli, paths).unwrap_err();
+    assert!(error.contains("ambiguous"));
 }
 
 #[test]
