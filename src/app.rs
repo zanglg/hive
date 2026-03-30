@@ -228,6 +228,11 @@ fn remove_shims_for_install_dir(shim_dir: &Path, install_dir: &Path) -> Result<(
         return Ok(());
     }
 
+    let current_dir = install_dir
+        .parent()
+        .map(|parent| parent.join("current"))
+        .unwrap_or_else(|| install_dir.join("current"));
+
     for entry in fs::read_dir(shim_dir)
         .map_err(|error| format!("failed to read {}: {error}", shim_dir.display()))?
     {
@@ -237,7 +242,7 @@ fn remove_shims_for_install_dir(shim_dir: &Path, install_dir: &Path) -> Result<(
             Err(_) => continue,
         };
 
-        if target.starts_with(install_dir) {
+        if target.starts_with(install_dir) || target.starts_with(&current_dir) {
             fs::remove_file(&path)
                 .map_err(|error| format!("failed to remove {}: {error}", path.display()))?;
         }
