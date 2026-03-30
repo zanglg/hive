@@ -406,8 +406,7 @@ fn rollback_activation_after_state_failure(
     desired_names: &HashSet<String>,
 ) -> Result<(), String> {
     if current_dir.symlink_metadata().is_ok() {
-        let (targets, _) = export_targets_through_current(current_dir, exported)?;
-        activate_version(shim_dir, &targets)
+        activate_version(shim_dir, exported)
     } else {
         remove_shims_by_names(shim_dir, desired_names)
     }
