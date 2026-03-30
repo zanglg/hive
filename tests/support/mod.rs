@@ -159,7 +159,11 @@ pub fn seed_installed_package(paths: &HivePaths, package: &str, versions: &[&str
     for version in versions {
         let install_dir = paths.package_store.join(package).join(version);
         fs::create_dir_all(&install_dir).unwrap();
-        fs::write(install_dir.join(package), format!("binary-{version}")).unwrap();
+        let binary_path = install_dir.join(package);
+        if let Some(parent) = binary_path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(binary_path, format!("binary-{version}")).unwrap();
     }
 
     let manifest_version = versions.last().unwrap().to_string();
@@ -193,11 +197,11 @@ pub fn seed_installed_package_with_binaries(
         let install_dir = paths.package_store.join(package).join(version);
         fs::create_dir_all(&install_dir).unwrap();
         for binary_name in binary_names {
-            fs::write(
-                install_dir.join(binary_name),
-                format!("binary-{version}-{binary_name}"),
-            )
-            .unwrap();
+            let binary_path = install_dir.join(binary_name);
+            if let Some(parent) = binary_path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(binary_path, format!("binary-{version}-{binary_name}")).unwrap();
         }
     }
 

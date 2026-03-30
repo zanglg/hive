@@ -141,7 +141,10 @@ fn install_package(paths: &HivePaths, package: &str) -> Result<(), String> {
     }
 
     if state.active.is_none() {
-        activate_version(&paths.shim_dir, &exported)?;
+        let current_dir = paths.package_store.join(package).join("current");
+        set_package_current(&current_dir, &install_dir)?;
+        let active_targets = export_targets_through_current(&current_dir, &exported)?;
+        activate_version(&paths.shim_dir, &active_targets)?;
         state.active = Some(manifest.version.clone());
     }
 
@@ -167,6 +170,9 @@ fn use_package(paths: &HivePaths, package: &str, version: &str) -> Result<(), St
         })
         .collect::<Result<Vec<_>, String>>()?;
 
+    let current_dir = paths.package_store.join(package).join("current");
+    set_package_current(&current_dir, &install_dir)?;
+    let exported = export_targets_through_current(&current_dir, &exported)?;
     activate_version(&paths.shim_dir, &exported)?;
     let store = StateStore::new(paths.state_dir.clone());
     store.update_active_version(package, version)?;
@@ -238,6 +244,51 @@ fn remove_shims_for_install_dir(shim_dir: &Path, install_dir: &Path) -> Result<(
     }
 
     Ok(())
+}
+
+fn export_targets_through_current(
+    current_dir: &Path,
+    binaries: &[(String, PathBuf)],
+) -> Result<Vec<(String, PathBuf)>, String> {
+    binaries
+        .iter()
+        .map(|(binary, _)| {
+            let shim_name = Path::new(binary)
+                .file_name()
+                .ok_or_else(|| format!("invalid binary path `{binary}`"))?
+                .to_string_lossy()
+                .to_string();
+            Ok((shim_name, current_dir.join(binary)))
+        })
+        .collect()
+}
+
+fn set_package_current(current_dir: &Path, install_dir: &Path) -> Result<(), String> {
+    if let Ok(metadata) = current_dir.symlink_metadata() {
+        let remove_result = if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+            fs::remove_dir_all(current_dir)
+        } else {
+            fs::remove_file(current_dir)
+        };
+        remove_result.map_err(|error| {
+            format!(
+                "failed to replace {}: {error}",
+                current_dir.display()
+            )
+        })?;
+    }
+
+    if let Some(parent) = current_dir.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    }
+
+    std::os::unix::fs::symlink(install_dir, current_dir).map_err(|error| {
+        format!(
+            "failed to link {}: {error}",
+            current_dir.display()
+        )
+    })
 }
 
 fn download_to_cache(
