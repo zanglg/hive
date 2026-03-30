@@ -306,6 +306,34 @@ fn install_keeps_flat_archive_layout_unchanged() {
 }
 
 #[test]
+fn installs_tar_xz_archive_into_versioned_package_store() {
+    let temp = tempdir().unwrap();
+    let archive_path = temp.path().join("hx.tar.xz");
+    let source_dir = temp.path().join("source");
+    fs::create_dir_all(&source_dir).unwrap();
+    fs::write(source_dir.join("hx"), "stub-binary").unwrap();
+    tests_support::write_tar_xz(&archive_path, &source_dir, "hx");
+
+    let bytes = fs::read(&archive_path).unwrap();
+    let checksum = format!("sha256:{:x}", Sha256::digest(bytes));
+    let declared_binaries = vec!["hx".to_string()];
+
+    let installer = Installer::new(temp.path().join("pkgs"));
+    let install_dir = installer
+        .install_archive(
+            "hx",
+            "25.07.1",
+            &archive_path,
+            &checksum,
+            ArchiveKind::parse("tar.xz").unwrap(),
+            &declared_binaries,
+        )
+        .unwrap();
+
+    assert!(install_dir.join("hx").exists());
+}
+
+#[test]
 fn install_command_resolves_manifest_and_activates_first_version() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
