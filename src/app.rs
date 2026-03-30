@@ -196,6 +196,7 @@ fn uninstall_package(
 
     if updated.active.is_none() {
         remove_shims_for_install_dir(&paths.shim_dir, &install_dir)?;
+        remove_package_current(&install_dir)?;
     }
 
     Ok(())
@@ -264,8 +265,31 @@ fn export_targets_through_current(
                 .to_string_lossy()
                 .to_string();
             Ok((shim_name, current_dir.join(binary)))
-        })
-        .collect()
+    })
+    .collect()
+}
+
+fn remove_package_current(install_dir: &Path) -> Result<(), String> {
+    let current_dir = install_dir
+        .parent()
+        .map(|parent| parent.join("current"))
+        .unwrap_or_else(|| install_dir.join("current"));
+
+    if let Ok(metadata) = current_dir.symlink_metadata() {
+        let remove_result = if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+            fs::remove_dir_all(&current_dir)
+        } else {
+            fs::remove_file(&current_dir)
+        };
+        remove_result.map_err(|error| {
+            format!(
+                "failed to remove {}: {error}",
+                current_dir.display()
+            )
+        })?;
+    }
+
+    Ok(())
 }
 
 fn set_package_current(current_dir: &Path, install_dir: &Path) -> Result<(), String> {
