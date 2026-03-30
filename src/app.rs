@@ -101,14 +101,13 @@ fn install_package(paths: &HivePaths, package: &str) -> Result<(), String> {
         .binaries
         .iter()
         .map(|binary| {
-            let target = install_dir.join(binary);
-            if !target.exists() {
+            if !crate::installer::path_exists_within_tree(&install_dir, binary)? {
                 return Err(format!(
                     "declared binary missing after extraction: {}",
-                    target.display()
+                    install_dir.join(binary).display()
                 ));
             }
-            Ok((binary.clone(), target))
+            Ok((binary.clone(), install_dir.join(binary)))
         })
         .collect::<Result<Vec<_>, String>>()
     {
@@ -158,14 +157,13 @@ fn use_package(paths: &HivePaths, package: &str, version: &str) -> Result<(), St
         .binaries
         .iter()
         .map(|binary| {
-            let target = install_dir.join(binary);
-            if !target.exists() {
+            if !crate::installer::path_exists_within_tree(&install_dir, binary)? {
                 return Err(format!(
                     "installed binary not found for package `{package}` version `{version}`: {}",
-                    target.display()
+                    install_dir.join(binary).display()
                 ));
             }
-            Ok((binary.clone(), target))
+            Ok((binary.clone(), install_dir.join(binary)))
         })
         .collect::<Result<Vec<_>, String>>()?;
 

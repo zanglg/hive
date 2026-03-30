@@ -1,7 +1,8 @@
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    path::{Path, PathBuf},
+    io,
+    path::{Component, Path, PathBuf},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,9 +151,50 @@ fn normalize_extracted_layout(temp_dir: &Path, declared_binaries: &[String]) -> 
     Ok(())
 }
 
+pub(crate) fn path_exists_within_tree(root: &Path, relative_path: &str) -> Result<bool, String> {
+    let mut current = root.to_path_buf();
+    let mut components = Path::new(relative_path).components().peekable();
+
+    if components.peek().is_none() {
+        return Ok(false);
+    }
+
+    while let Some(component) = components.next() {
+        match component {
+            Component::Normal(part) => current.push(part),
+            _ => return Ok(false),
+        }
+
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect {}: {error}",
+                    current.display()
+                ))
+            }
+        };
+
+        if metadata.file_type().is_symlink() {
+            return Ok(false);
+        }
+
+        if components.peek().is_none() {
+            return Ok(metadata.file_type().is_file());
+        }
+
+        if !metadata.file_type().is_dir() {
+            return Ok(false);
+        }
+    }
+
+    Ok(false)
+}
+
 fn binaries_exist_under(dir: &Path, declared_binaries: &[String]) -> Result<bool, String> {
     for binary in declared_binaries {
-        if !dir.join(binary).exists() {
+        if !path_exists_within_tree(dir, binary)? {
             return Ok(false);
         }
     }
