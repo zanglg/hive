@@ -457,6 +457,30 @@ fn install_command_rejects_duplicate_binary_basenames() {
 }
 
 #[test]
+fn install_command_rolls_back_shims_when_state_save_fails_after_activation() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_install_fixture(&paths, "rg", "14.1.0");
+    fs::create_dir_all(&paths.state_dir).unwrap();
+    let state_file = paths.state_dir.join("rg.json");
+    fs::write(&state_file, r#"{"name":"rg","versions":[],"active":null}"#).unwrap();
+    let mut permissions = fs::metadata(&state_file).unwrap().permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o444);
+    }
+    fs::set_permissions(&state_file, permissions).unwrap();
+
+    let cli = Cli::try_parse_from(["hive", "install", "rg"]).unwrap();
+    let error = app::run_with_paths(cli, paths.clone()).unwrap_err();
+
+    assert!(error.contains("failed to write"));
+    assert!(paths.package_store.join("rg/current").symlink_metadata().is_err());
+    assert!(paths.shim_dir.join("rg").symlink_metadata().is_err());
+}
+
+#[test]
 fn install_fails_on_checksum_mismatch() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
