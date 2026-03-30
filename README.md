@@ -7,7 +7,7 @@ Version 1 is intentionally narrow:
 - Manifests are local TOML files
 - Each manifest describes exactly one package version
 - Multiple installed versions can coexist
-- One version at a time is active through Hive-managed symlinks
+- One version at a time is active through `pkgs/<package>/current` and Hive-managed shims
 
 ## Status
 
@@ -36,9 +36,11 @@ cargo test
 Hive uses user-scoped directories by default:
 
 - Manifests: `~/.config/hive/manifests/`
-- Package store: `~/.local/share/hive/pkgs/`
+- Package store: `~/.local/share/hive/pkgs/<package>/<version>/`
 - State: `~/.local/share/hive/state/`
 - Shim directory: `~/.local/bin/hive/`
+
+Each installed package also has a `current` symlink at `~/.local/share/hive/pkgs/<package>/current` that points to the active version directory.
 
 Add `~/.local/bin/hive` to `PATH` if you want active package binaries to be directly executable.
 
@@ -113,11 +115,11 @@ Supported platform keys:
 - `macos-x86_64`
 - `macos-aarch64`
 
-`binaries` are paths relative to the extracted archive root. Hive verifies that every declared binary exists after extraction.
+`binaries` are paths relative to the installed version directory. Hive verifies that every declared binary exists after extraction, and it will normalize a single top-level wrapper directory when the archive extracts that way.
 
 ## Notes and Limits
 
 - Manifest discovery is local-only in v1
 - Hive fails on ambiguous manifest matches instead of choosing one
-- Archive support is limited to `tar.gz` and `zip`
+- Archive support is limited to `tar.gz`, `tar.xz`, and `zip`
 - No dependency resolution or automatic update discovery is included
