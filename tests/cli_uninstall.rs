@@ -43,14 +43,19 @@ fn forced_uninstall_removes_active_exported_shims() {
         &["rg", "rga"],
     );
 
+    std::os::unix::fs::symlink(
+        paths.package_store.join("ripgrep/14.1.0"),
+        paths.package_store.join("ripgrep/current"),
+    )
+    .unwrap();
     fs::create_dir_all(&paths.shim_dir).unwrap();
     std::os::unix::fs::symlink(
-        paths.package_store.join("ripgrep/14.1.0/rg"),
+        paths.package_store.join("ripgrep/current/rg"),
         paths.shim_dir.join("rg"),
     )
     .unwrap();
     std::os::unix::fs::symlink(
-        paths.package_store.join("ripgrep/14.1.0/rga"),
+        paths.package_store.join("ripgrep/current/rga"),
         paths.shim_dir.join("rga"),
     )
     .unwrap();
