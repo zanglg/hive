@@ -276,9 +276,26 @@ fn list_packages(paths: &HivePaths) -> Result<String, String> {
 }
 
 fn which_package(paths: &HivePaths, package: &str) -> Result<String, String> {
-    let path = fs::read_link(paths.shim_dir.join(package))
-        .map_err(|error| format!("failed to resolve shim for `{package}`: {error}"))?;
-    Ok(path.display().to_string())
+    let repo = ManifestRepository::new(paths.manifest_dirs.clone());
+    let (_, manifest) = repo.load(package)?;
+    let artifact = manifest.artifact_for(Platform::current()?)?;
+
+    match artifact.binaries.as_slice() {
+        [] => Err(format!("manifest for `{package}` declares no binaries")),
+        [binary] => {
+            let shim_name = Path::new(binary)
+                .file_name()
+                .ok_or_else(|| format!("invalid binary path `{binary}`"))?
+                .to_string_lossy()
+                .to_string();
+            let path = fs::read_link(paths.shim_dir.join(shim_name))
+                .map_err(|error| format!("failed to resolve shim for `{package}`: {error}"))?;
+            Ok(path.display().to_string())
+        }
+        _ => Err(format!(
+            "which `{package}` is ambiguous for packages with multiple binaries"
+        )),
+    }
 }
 
 fn remove_shims_for_install_dir(shim_dir: &Path, install_dir: &Path) -> Result<(), String> {
