@@ -344,8 +344,12 @@ fn install_command_supports_tar_xz_archives_via_manifest() {
 
     assert!(paths.package_store.join("hx/25.07.1/hx").exists());
     assert_eq!(
+        fs::read_link(paths.package_store.join("hx/current")).unwrap(),
+        paths.package_store.join("hx/25.07.1")
+    );
+    assert_eq!(
         fs::read_link(paths.shim_dir.join("hx")).unwrap(),
-        paths.package_store.join("hx/25.07.1/hx")
+        paths.package_store.join("hx/current/hx")
     );
 }
 
@@ -360,8 +364,40 @@ fn install_command_resolves_manifest_and_activates_first_version() {
 
     assert!(paths.package_store.join("rg/14.1.0/rg").exists());
     assert_eq!(
+        fs::read_link(paths.package_store.join("rg/current")).unwrap(),
+        paths.package_store.join("rg/14.1.0")
+    );
+    assert_eq!(
         fs::read_link(paths.shim_dir.join("rg")).unwrap(),
-        paths.package_store.join("rg/14.1.0/rg")
+        paths.package_store.join("rg/current/rg")
+    );
+}
+
+#[test]
+fn install_command_uses_binary_basenames_for_shim_names() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_installed_package_with_binaries(
+        &paths,
+        "rg",
+        &["14.1.0"],
+        "14.1.0",
+        &["bin/rg", "bin/rga"],
+    );
+
+    let cli = Cli::try_parse_from(["hive", "use", "rg", "14.1.0"]).unwrap();
+    app::run_with_paths(cli, paths.clone()).unwrap();
+
+    assert!(paths.shim_dir.join("rg").exists());
+    assert!(paths.shim_dir.join("rga").exists());
+    assert!(!paths.shim_dir.join("bin/rg").exists());
+    assert_eq!(
+        fs::read_link(paths.shim_dir.join("rg")).unwrap(),
+        paths.package_store.join("rg/current/bin/rg")
+    );
+    assert_eq!(
+        fs::read_link(paths.shim_dir.join("rga")).unwrap(),
+        paths.package_store.join("rg/current/bin/rga")
     );
 }
 

@@ -33,9 +33,11 @@ fn saves_and_loads_active_package_version() {
 fn creates_symlink_for_active_binary_in_hive_shim_dir() {
     let temp = tempdir().unwrap();
     let install_root = temp.path().join("pkgs/rg/14.1.0");
-    let binary = install_root.join("rg");
+    let current = temp.path().join("pkgs/rg/current");
     fs::create_dir_all(&install_root).unwrap();
+    let binary = install_root.join("rg");
     fs::write(&binary, "stub").unwrap();
+    std::os::unix::fs::symlink(&install_root, &current).unwrap();
 
     let shim_dir = temp.path().join("bin/hive");
     activate_version(&shim_dir, &[("rg".into(), binary.clone())]).unwrap();
@@ -46,35 +48,51 @@ fn creates_symlink_for_active_binary_in_hive_shim_dir() {
 }
 
 #[test]
-fn use_command_switches_active_version() {
+fn use_command_switches_current_version_and_keeps_shims_on_current() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
-    tests_support::seed_installed_package(&paths, "rg", &["14.0.0", "14.1.0"], "14.0.0");
+    tests_support::seed_installed_package_with_binaries(
+        &paths,
+        "rg",
+        &["14.0.0", "14.1.0"],
+        "14.0.0",
+        &["bin/rg"],
+    );
 
     let cli = Cli::try_parse_from(["hive", "use", "rg", "14.1.0"]).unwrap();
     app::run_with_paths(cli, paths.clone()).unwrap();
 
     assert_eq!(
+        fs::read_link(paths.package_store.join("rg/current")).unwrap(),
+        paths.package_store.join("rg/14.1.0")
+    );
+    assert_eq!(
         fs::read_link(paths.shim_dir.join("rg")).unwrap(),
-        paths.package_store.join("rg/14.1.0/rg")
+        paths.package_store.join("rg/current/bin/rg")
     );
 }
 
 #[test]
-fn which_reports_active_binary_path() {
+fn which_reports_active_binary_path_through_current() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
-    tests_support::seed_installed_package(&paths, "rg", &["14.1.0"], "14.1.0");
+    tests_support::seed_installed_package_with_binaries(
+        &paths,
+        "rg",
+        &["14.1.0"],
+        "14.1.0",
+        &["bin/rg"],
+    );
     fs::create_dir_all(&paths.shim_dir).unwrap();
     std::os::unix::fs::symlink(
-        paths.package_store.join("rg/14.1.0/rg"),
+        paths.package_store.join("rg/current/bin/rg"),
         paths.shim_dir.join("rg"),
     )
     .unwrap();
 
     let cli = Cli::try_parse_from(["hive", "which", "rg"]).unwrap();
     let output = app::run_capture(cli, paths).unwrap();
-    assert!(output.contains("14.1.0/rg"));
+    assert!(output.contains("rg/current/bin/rg"));
 }
 
 #[test]
@@ -93,10 +111,16 @@ fn list_reports_installed_versions_and_marks_active_one() {
 fn all_v1_commands_complete_without_placeholder_errors() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
-    tests_support::seed_installed_package(&paths, "rg", &["14.1.0"], "14.1.0");
+    tests_support::seed_installed_package_with_binaries(
+        &paths,
+        "rg",
+        &["14.1.0"],
+        "14.1.0",
+        &["bin/rg"],
+    );
     fs::create_dir_all(&paths.shim_dir).unwrap();
     std::os::unix::fs::symlink(
-        paths.package_store.join("rg/14.1.0/rg"),
+        paths.package_store.join("rg/current/bin/rg"),
         paths.shim_dir.join("rg"),
     )
     .unwrap();
