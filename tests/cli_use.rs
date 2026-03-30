@@ -9,6 +9,7 @@ use hive::{
     state::{InstalledPackage, StateStore},
 };
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use tempfile::tempdir;
 
 #[test]
@@ -167,6 +168,9 @@ fn use_command_restores_previous_activation_when_state_update_fails_after_shim_m
 }"#,
     )
     .unwrap();
+    let mut permissions = fs::metadata(&state_file).unwrap().permissions();
+    permissions.set_mode(0o444);
+    fs::set_permissions(&state_file, permissions).unwrap();
     std::os::unix::fs::symlink(
         paths.package_store.join("rg/14.0.0"),
         paths.package_store.join("rg/current"),
@@ -174,7 +178,7 @@ fn use_command_restores_previous_activation_when_state_update_fails_after_shim_m
     .unwrap();
     fs::create_dir_all(&paths.shim_dir).unwrap();
     std::os::unix::fs::symlink(
-        paths.package_store.join("rg/current/rg"),
+        paths.package_store.join("rg/current/bin/rg"),
         paths.shim_dir.join("rg"),
     )
     .unwrap();
@@ -189,7 +193,7 @@ fn use_command_restores_previous_activation_when_state_update_fails_after_shim_m
     );
     assert_eq!(
         fs::read_link(paths.shim_dir.join("rg")).unwrap(),
-        paths.package_store.join("rg/current/rg")
+        paths.package_store.join("rg/current/bin/rg")
     );
 }
 
