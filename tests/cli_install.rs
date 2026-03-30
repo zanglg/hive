@@ -334,6 +334,22 @@ fn installs_tar_xz_archive_into_versioned_package_store() {
 }
 
 #[test]
+fn install_command_supports_tar_xz_archives_via_manifest() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_install_fixture_tar_xz(&paths, "hx", "25.07.1");
+
+    let cli = Cli::try_parse_from(["hive", "install", "hx"]).unwrap();
+    app::run_with_paths(cli, paths.clone()).unwrap();
+
+    assert!(paths.package_store.join("hx/25.07.1/hx").exists());
+    assert_eq!(
+        fs::read_link(paths.shim_dir.join("hx")).unwrap(),
+        paths.package_store.join("hx/25.07.1/hx")
+    );
+}
+
+#[test]
 fn install_command_resolves_manifest_and_activates_first_version() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
