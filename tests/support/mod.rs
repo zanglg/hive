@@ -66,6 +66,18 @@ pub fn write_tar_gz_with_symlink(
     builder.into_inner().unwrap().finish().unwrap();
 }
 
+pub fn write_tar_gz_files(archive_path: &Path, files: &[(&Path, &str)]) {
+    let tar_gz = fs::File::create(archive_path).unwrap();
+    let encoder = GzEncoder::new(tar_gz, Compression::default());
+    let mut builder = Builder::new(encoder);
+    for (source_path, archive_path_name) in files {
+        builder
+            .append_path_with_name(source_path, archive_path_name)
+            .unwrap();
+    }
+    builder.into_inner().unwrap().finish().unwrap();
+}
+
 pub fn fixture_paths(root: &Path) -> HivePaths {
     HivePaths {
         manifest_dirs: vec![root.join("manifests")],
@@ -244,7 +256,7 @@ fn write_manifest(
     );
 }
 
-fn write_manifest_with_binaries(
+pub fn write_manifest_with_binaries(
     paths: &HivePaths,
     package: &str,
     version: &str,
@@ -283,7 +295,7 @@ fn write_manifest_with_archive(
     );
 }
 
-fn write_manifest_with_binaries_with_archive(
+pub fn write_manifest_with_binaries_with_archive(
     paths: &HivePaths,
     package: &str,
     version: &str,
