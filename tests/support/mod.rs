@@ -88,7 +88,23 @@ pub fn seed_install_fixture(paths: &HivePaths, package: &str, version: &str) {
         "sha256:{:x}",
         Sha256::digest(fs::read(&archive_path).unwrap())
     );
-    write_manifest(paths, package, version, &archive_path, &checksum, package);
+    write_manifest_with_archive(paths, package, version, &archive_path, &checksum, package, "tar.gz");
+}
+
+pub fn seed_install_fixture_tar_xz(paths: &HivePaths, package: &str, version: &str) {
+    let source_dir = paths.state_dir.join("fixture-source");
+    fs::create_dir_all(&source_dir).unwrap();
+    fs::write(source_dir.join(package), "stub-binary").unwrap();
+
+    fs::create_dir_all(&paths.state_dir).unwrap();
+    let archive_path = paths.state_dir.join(format!("{package}-{version}.tar.xz"));
+    write_tar_xz(&archive_path, &source_dir, package);
+
+    let checksum = format!(
+        "sha256:{:x}",
+        Sha256::digest(fs::read(&archive_path).unwrap())
+    );
+    write_manifest_with_archive(paths, package, version, &archive_path, &checksum, package, "tar.xz");
 }
 
 pub fn seed_bad_checksum_fixture(paths: &HivePaths, package: &str, version: &str) {
@@ -113,7 +129,7 @@ pub fn seed_missing_binary_fixture(paths: &HivePaths, package: &str, version: &s
         "sha256:{:x}",
         Sha256::digest(fs::read(&archive_path).unwrap())
     );
-    write_manifest(paths, package, version, &archive_path, &checksum, package);
+    write_manifest_with_archive(paths, package, version, &archive_path, &checksum, package, "tar.gz");
 }
 
 pub fn seed_symlink_binary_fixture(paths: &HivePaths, package: &str, version: &str) {
@@ -128,7 +144,15 @@ pub fn seed_symlink_binary_fixture(paths: &HivePaths, package: &str, version: &s
         "sha256:{:x}",
         Sha256::digest(fs::read(&archive_path).unwrap())
     );
-    write_manifest_with_binaries(paths, package, version, &archive_path, &checksum, &["bin/sh"]);
+    write_manifest_with_binaries_with_archive(
+        paths,
+        package,
+        version,
+        &archive_path,
+        &checksum,
+        &["bin/sh"],
+        "tar.gz",
+    );
 }
 
 pub fn seed_installed_package(paths: &HivePaths, package: &str, versions: &[&str], active: &str) {
@@ -205,13 +229,14 @@ fn write_manifest(
     checksum: &str,
     binary_name: &str,
 ) {
-    write_manifest_with_binaries(
+    write_manifest_with_binaries_with_archive(
         paths,
         package,
         version,
         archive_path,
         checksum,
         &[binary_name],
+        "tar.gz",
     );
 }
 
@@ -223,13 +248,54 @@ fn write_manifest_with_binaries(
     checksum: &str,
     binary_names: &[&str],
 ) {
+    write_manifest_with_binaries_with_archive(
+        paths,
+        package,
+        version,
+        archive_path,
+        checksum,
+        binary_names,
+        "tar.gz",
+    );
+}
+
+fn write_manifest_with_archive(
+    paths: &HivePaths,
+    package: &str,
+    version: &str,
+    archive_path: &Path,
+    checksum: &str,
+    binary_name: &str,
+    archive: &str,
+) {
+    write_manifest_with_binaries_with_archive(
+        paths,
+        package,
+        version,
+        archive_path,
+        checksum,
+        &[binary_name],
+        archive,
+    );
+}
+
+fn write_manifest_with_binaries_with_archive(
+    paths: &HivePaths,
+    package: &str,
+    version: &str,
+    archive_path: &Path,
+    checksum: &str,
+    binary_names: &[&str],
+    archive: &str,
+) {
     fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
     fs::write(
         paths.manifest_dirs[0].join(format!("{package}.toml")),
         format!(
-            "name = \"{package}\"\nversion = \"{version}\"\n\n[platform.{platform}]\nurl = \"file://{archive}\"\nchecksum = \"{checksum}\"\narchive = \"tar.gz\"\nbinaries = [{binaries}]\n",
+            "name = \"{package}\"\nversion = \"{version}\"\n\n[platform.{platform}]\nurl = \"file://{archive}\"\nchecksum = \"{checksum}\"\narchive = \"{archive_kind}\"\nbinaries = [{binaries}]\n",
             platform = current_platform_key(),
             archive = archive_path.display(),
+            archive_kind = archive,
             binaries = binary_names
                 .iter()
                 .map(|binary_name| format!("\"{binary_name}\""))
