@@ -8,6 +8,7 @@ use std::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveKind {
     TarGz,
+    TarXz,
     Zip,
 }
 
@@ -15,6 +16,7 @@ impl ArchiveKind {
     pub fn parse(value: &str) -> Result<Self, String> {
         match value {
             "tar.gz" => Ok(Self::TarGz),
+            "tar.xz" => Ok(Self::TarXz),
             "zip" => Ok(Self::Zip),
             other => Err(format!("unsupported archive type `{other}`")),
         }
@@ -65,6 +67,14 @@ impl Installer {
                     format!("failed to read {}: {error}", archive_path.display())
                 })?;
                 let decoder = flate2::read::GzDecoder::new(file);
+                let mut archive = tar::Archive::new(decoder);
+                archive.unpack(&temp_dir).map_err(|error| error.to_string())
+            }
+            ArchiveKind::TarXz => {
+                let file = fs::File::open(archive_path).map_err(|error| {
+                    format!("failed to read {}: {error}", archive_path.display())
+                })?;
+                let decoder = xz2::read::XzDecoder::new(file);
                 let mut archive = tar::Archive::new(decoder);
                 archive.unpack(&temp_dir).map_err(|error| error.to_string())
             }

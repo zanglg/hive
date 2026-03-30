@@ -529,6 +529,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml",
+ "xz2",
  "zip",
 ]
 

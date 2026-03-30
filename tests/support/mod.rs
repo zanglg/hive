@@ -12,10 +12,21 @@ use std::{
     path::{Path, PathBuf},
 };
 use tar::Builder;
+use xz2::write::XzEncoder;
 
 pub fn write_tar_gz(archive_path: &Path, source_dir: &Path, file_name: &str) {
     let tar_gz = fs::File::create(archive_path).unwrap();
     let encoder = GzEncoder::new(tar_gz, Compression::default());
+    let mut builder = Builder::new(encoder);
+    builder
+        .append_path_with_name(source_dir.join(file_name), file_name)
+        .unwrap();
+    builder.into_inner().unwrap().finish().unwrap();
+}
+
+pub fn write_tar_xz(archive_path: &Path, source_dir: &Path, file_name: &str) {
+    let tar_xz = fs::File::create(archive_path).unwrap();
+    let encoder = XzEncoder::new(tar_xz, 6);
     let mut builder = Builder::new(encoder);
     builder
         .append_path_with_name(source_dir.join(file_name), file_name)
