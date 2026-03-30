@@ -402,6 +402,61 @@ fn install_command_uses_binary_basenames_for_shim_names() {
 }
 
 #[test]
+fn install_command_does_not_switch_current_when_activation_fails() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_install_fixture(&paths, "rg", "14.1.0");
+
+    fs::create_dir_all(paths.shim_dir.parent().unwrap()).unwrap();
+    fs::write(&paths.shim_dir, "blocker").unwrap();
+
+    let cli = Cli::try_parse_from(["hive", "install", "rg"]).unwrap();
+    let error = app::run_with_paths(cli, paths.clone()).unwrap_err();
+
+    assert!(error.contains("failed to create"));
+    assert!(paths.package_store.join("rg/current").symlink_metadata().is_err());
+}
+
+#[test]
+fn install_command_rejects_duplicate_binary_basenames() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let archive_path = temp.path().join("rg.tar.gz");
+    let source_dir = temp.path().join("source");
+    fs::create_dir_all(source_dir.join("bin")).unwrap();
+    fs::create_dir_all(source_dir.join("alt")).unwrap();
+    let bin_rg = source_dir.join("bin/rg");
+    let alt_rg = source_dir.join("alt/rg");
+    fs::write(&bin_rg, "stub-binary").unwrap();
+    fs::write(&alt_rg, "stub-binary").unwrap();
+    tests_support::write_tar_gz_files(
+        &archive_path,
+        &[
+            (bin_rg.as_path(), "bin/rg"),
+            (alt_rg.as_path(), "alt/rg"),
+        ],
+    );
+
+    let bytes = fs::read(&archive_path).unwrap();
+    let checksum = format!("sha256:{:x}", Sha256::digest(bytes));
+    tests_support::write_manifest_with_binaries_with_archive(
+        &paths,
+        "rg",
+        "14.1.0",
+        &archive_path,
+        &checksum,
+        &["bin/rg", "alt/rg"],
+        "tar.gz",
+    );
+
+    let cli = Cli::try_parse_from(["hive", "install", "rg"]).unwrap();
+    let error = app::run_with_paths(cli, paths.clone()).unwrap_err();
+
+    assert!(error.contains("duplicate shim name"));
+    assert!(paths.package_store.join("rg/current").symlink_metadata().is_err());
+}
+
+#[test]
 fn install_fails_on_checksum_mismatch() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());

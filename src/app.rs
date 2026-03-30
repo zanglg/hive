@@ -9,6 +9,7 @@ use crate::{
 };
 use std::{
     fs,
+    collections::HashSet,
     path::{Path, PathBuf},
 };
 
@@ -130,6 +131,10 @@ fn install_package(paths: &HivePaths, package: &str) -> Result<(), String> {
             versions: Vec::new(),
             active: None,
         });
+    let previous_state = state.clone();
+    let package_root = paths.package_store.join(package);
+    let current_dir = package_root.join("current");
+    let previous_current = fs::read_link(&current_dir).ok();
 
     if !state
         .versions
@@ -141,11 +146,28 @@ fn install_package(paths: &HivePaths, package: &str) -> Result<(), String> {
     }
 
     if state.active.is_none() {
-        let current_dir = paths.package_store.join(package).join("current");
-        set_package_current(&current_dir, &install_dir)?;
-        let active_targets = export_targets_through_current(&current_dir, &exported)?;
+        let (active_targets, desired_names) =
+            export_targets_through_current(&current_dir, &exported)?;
         activate_version(&paths.shim_dir, &active_targets)?;
         state.active = Some(manifest.version.clone());
+        store.save_package(&state)?;
+        if let Err(error) = set_package_current(&current_dir, &install_dir) {
+            let _ = store.save_package(&previous_state);
+            if previous_current.is_none() {
+                let _ = remove_shims_by_names(&paths.shim_dir, &desired_names);
+            }
+            return Err(error);
+        }
+        if let Err(error) = remove_stale_package_shims(&paths.shim_dir, &package_root, &desired_names)
+        {
+            let _ = restore_package_current(&current_dir, previous_current.as_deref());
+            if previous_current.is_none() {
+                let _ = remove_shims_by_names(&paths.shim_dir, &desired_names);
+            }
+            let _ = store.save_package(&previous_state);
+            return Err(error);
+        }
+        return Ok(());
     }
 
     store.save_package(&state)
@@ -156,6 +178,9 @@ fn use_package(paths: &HivePaths, package: &str, version: &str) -> Result<(), St
     let (_, manifest) = repo.load(package)?;
     let artifact = manifest.artifact_for(Platform::current()?)?;
     let install_dir = paths.package_store.join(package).join(version);
+    let package_root = paths.package_store.join(package);
+    let current_dir = package_root.join("current");
+    let previous_current = fs::read_link(&current_dir).ok();
     let exported = artifact
         .binaries
         .iter()
@@ -169,13 +194,29 @@ fn use_package(paths: &HivePaths, package: &str, version: &str) -> Result<(), St
             Ok((binary.clone(), install_dir.join(binary)))
         })
         .collect::<Result<Vec<_>, String>>()?;
+    let (exported, desired_names) = export_targets_through_current(&current_dir, &exported)?;
 
-    let current_dir = paths.package_store.join(package).join("current");
-    set_package_current(&current_dir, &install_dir)?;
-    let exported = export_targets_through_current(&current_dir, &exported)?;
     activate_version(&paths.shim_dir, &exported)?;
     let store = StateStore::new(paths.state_dir.clone());
+    let previous_state = store
+        .load_package(package)?
+        .ok_or_else(|| format!("package `{package}` is not installed"))?;
     store.update_active_version(package, version)?;
+    if let Err(error) = set_package_current(&current_dir, &install_dir) {
+        let _ = store.save_package(&previous_state);
+        if previous_current.is_none() {
+            let _ = remove_shims_by_names(&paths.shim_dir, &desired_names);
+        }
+        return Err(error);
+    }
+    if let Err(error) = remove_stale_package_shims(&paths.shim_dir, &package_root, &desired_names) {
+        let _ = restore_package_current(&current_dir, previous_current.as_deref());
+        if previous_current.is_none() {
+            let _ = remove_shims_by_names(&paths.shim_dir, &desired_names);
+        }
+        let _ = store.save_package(&previous_state);
+        return Err(error);
+    }
     Ok(())
 }
 
@@ -255,18 +296,91 @@ fn remove_shims_for_install_dir(shim_dir: &Path, install_dir: &Path) -> Result<(
 fn export_targets_through_current(
     current_dir: &Path,
     binaries: &[(String, PathBuf)],
-) -> Result<Vec<(String, PathBuf)>, String> {
-    binaries
-        .iter()
-        .map(|(binary, _)| {
-            let shim_name = Path::new(binary)
-                .file_name()
-                .ok_or_else(|| format!("invalid binary path `{binary}`"))?
-                .to_string_lossy()
-                .to_string();
-            Ok((shim_name, current_dir.join(binary)))
-    })
-    .collect()
+) -> Result<(Vec<(String, PathBuf)>, HashSet<String>), String> {
+    let mut targets = Vec::with_capacity(binaries.len());
+    let mut names = HashSet::with_capacity(binaries.len());
+
+    for (binary, _) in binaries {
+        let shim_name = Path::new(binary)
+            .file_name()
+            .ok_or_else(|| format!("invalid binary path `{binary}`"))?
+            .to_string_lossy()
+            .to_string();
+        if !names.insert(shim_name.clone()) {
+            return Err(format!("duplicate shim name `{shim_name}`"));
+        }
+        targets.push((shim_name, current_dir.join(binary)));
+    }
+
+    Ok((targets, names))
+}
+
+fn remove_stale_package_shims(
+    shim_dir: &Path,
+    package_root: &Path,
+    desired_names: &HashSet<String>,
+) -> Result<(), String> {
+    if !shim_dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(shim_dir)
+        .map_err(|error| format!("failed to read {}: {error}", shim_dir.display()))?
+    {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        let name = match path.file_name().and_then(|value| value.to_str()) {
+            Some(value) => value,
+            None => continue,
+        };
+        if desired_names.contains(name) {
+            continue;
+        }
+
+        let target = match fs::read_link(&path) {
+            Ok(target) => target,
+            Err(_) => continue,
+        };
+
+        if target.starts_with(package_root) {
+            fs::remove_file(&path)
+                .map_err(|error| format!("failed to remove {}: {error}", path.display()))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn restore_package_current(current_dir: &Path, previous_current: Option<&Path>) -> Result<(), String> {
+    if let Some(previous_current) = previous_current {
+        set_package_current(current_dir, previous_current)
+    } else if current_dir.symlink_metadata().is_ok() {
+        fs::remove_file(current_dir)
+            .map_err(|error| format!("failed to remove {}: {error}", current_dir.display()))
+    } else {
+        Ok(())
+    }
+}
+
+fn remove_shims_by_names(shim_dir: &Path, desired_names: &HashSet<String>) -> Result<(), String> {
+    if !shim_dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(shim_dir)
+        .map_err(|error| format!("failed to read {}: {error}", shim_dir.display()))?
+    {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        let name = match path.file_name().and_then(|value| value.to_str()) {
+            Some(value) => value,
+            None => continue,
+        };
+        if desired_names.contains(name) {
+            fs::remove_file(&path)
+                .map_err(|error| format!("failed to remove {}: {error}", path.display()))?;
+        }
+    }
+
+    Ok(())
 }
 
 fn remove_package_current(install_dir: &Path) -> Result<(), String> {
