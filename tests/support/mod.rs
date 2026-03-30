@@ -105,6 +105,21 @@ pub fn seed_missing_binary_fixture(paths: &HivePaths, package: &str, version: &s
     write_manifest(paths, package, version, &archive_path, &checksum, package);
 }
 
+pub fn seed_symlink_binary_fixture(paths: &HivePaths, package: &str, version: &str) {
+    fs::create_dir_all(&paths.state_dir).unwrap();
+    let archive_path = paths.state_dir.join(format!("{package}-{version}.tar.gz"));
+    let payload_dir = paths.state_dir.join("fixture-payload");
+    fs::create_dir_all(&payload_dir).unwrap();
+    fs::write(payload_dir.join("sh"), "stub-binary").unwrap();
+    write_tar_gz_with_symlink(&archive_path, "release/bin", &payload_dir);
+
+    let checksum = format!(
+        "sha256:{:x}",
+        Sha256::digest(fs::read(&archive_path).unwrap())
+    );
+    write_manifest_with_binaries(paths, package, version, &archive_path, &checksum, &["bin/sh"]);
+}
+
 pub fn seed_installed_package(paths: &HivePaths, package: &str, versions: &[&str], active: &str) {
     for version in versions {
         let install_dir = paths.package_store.join(package).join(version);

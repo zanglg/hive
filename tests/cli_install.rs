@@ -153,6 +153,41 @@ fn install_strips_single_wrapper_directory_before_validating_binaries() {
 }
 
 #[test]
+fn install_keeps_single_wrapper_directory_unchanged_when_declared_binaries_only_exist_via_symlink() {
+    let temp = tempdir().unwrap();
+    let archive_path = temp.path().join("rg.tar.gz");
+    let payload_dir = temp.path().join("payload");
+    fs::create_dir_all(&payload_dir).unwrap();
+    fs::write(payload_dir.join("sh"), "stub-binary").unwrap();
+    tests_support::write_tar_gz_with_symlink(&archive_path, "release/bin", &payload_dir);
+
+    let bytes = fs::read(&archive_path).unwrap();
+    let checksum = format!("sha256:{:x}", Sha256::digest(bytes));
+    let declared_binaries = vec!["bin/sh".to_string()];
+
+    let installer = Installer::new(temp.path().join("pkgs"));
+    let install_dir = installer
+        .install_archive(
+            "rg",
+            "14.1.0",
+            &archive_path,
+            &checksum,
+            ArchiveKind::TarGz,
+            &declared_binaries,
+        )
+        .unwrap();
+
+    assert!(
+        install_dir
+            .join("release/bin")
+            .symlink_metadata()
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false)
+    );
+    assert!(!install_dir.join("bin/sh").exists());
+}
+
+#[test]
 fn install_keeps_single_wrapper_directory_unchanged_when_declared_binaries_are_missing() {
     let temp = tempdir().unwrap();
     let archive_path = temp.path().join("gh.tar.gz");
@@ -179,6 +214,19 @@ fn install_keeps_single_wrapper_directory_unchanged_when_declared_binaries_are_m
 
     assert!(install_dir.join("release/share/notes.txt").exists());
     assert!(!install_dir.join("share/notes.txt").exists());
+}
+
+#[test]
+fn install_command_rejects_symlinked_declared_binaries() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_symlink_binary_fixture(&paths, "rg", "14.1.0");
+
+    let cli = Cli::try_parse_from(["hive", "install", "rg"]).unwrap();
+    let error = app::run_with_paths(cli, paths.clone()).unwrap_err();
+
+    assert!(error.contains("declared binary missing"));
+    assert!(!paths.package_store.join("rg/14.1.0").exists());
 }
 
 #[test]
