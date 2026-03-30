@@ -150,7 +150,15 @@ fn install_package(paths: &HivePaths, package: &str) -> Result<(), String> {
             export_targets_through_current(&current_dir, &exported)?;
         activate_version(&paths.shim_dir, &active_targets)?;
         state.active = Some(manifest.version.clone());
-        store.save_package(&state)?;
+        if let Err(error) = store.save_package(&state) {
+            let _ = rollback_activation_after_state_failure(
+                &paths.shim_dir,
+                &current_dir,
+                &exported,
+                &desired_names,
+            );
+            return Err(error);
+        }
         if let Err(error) = set_package_current(&current_dir, &install_dir) {
             let _ = store.save_package(&previous_state);
             if previous_current.is_none() {
@@ -201,7 +209,15 @@ fn use_package(paths: &HivePaths, package: &str, version: &str) -> Result<(), St
     let previous_state = store
         .load_package(package)?
         .ok_or_else(|| format!("package `{package}` is not installed"))?;
-    store.update_active_version(package, version)?;
+    if let Err(error) = store.update_active_version(package, version) {
+        let _ = rollback_activation_after_state_failure(
+            &paths.shim_dir,
+            &current_dir,
+            &exported,
+            &desired_names,
+        );
+        return Err(error);
+    }
     if let Err(error) = set_package_current(&current_dir, &install_dir) {
         let _ = store.save_package(&previous_state);
         if previous_current.is_none() {
@@ -381,6 +397,20 @@ fn remove_shims_by_names(shim_dir: &Path, desired_names: &HashSet<String>) -> Re
     }
 
     Ok(())
+}
+
+fn rollback_activation_after_state_failure(
+    shim_dir: &Path,
+    current_dir: &Path,
+    exported: &[(String, PathBuf)],
+    desired_names: &HashSet<String>,
+) -> Result<(), String> {
+    if current_dir.symlink_metadata().is_ok() {
+        let (targets, _) = export_targets_through_current(current_dir, exported)?;
+        activate_version(shim_dir, &targets)
+    } else {
+        remove_shims_by_names(shim_dir, desired_names)
+    }
 }
 
 fn remove_package_current(install_dir: &Path) -> Result<(), String> {

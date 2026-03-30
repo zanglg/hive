@@ -145,6 +145,55 @@ fn use_command_does_not_switch_current_when_activation_fails() {
 }
 
 #[test]
+fn use_command_restores_previous_activation_when_state_update_fails_after_shim_mutation() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_installed_package_with_binaries(
+        &paths,
+        "rg",
+        &["14.0.0", "14.1.0"],
+        "14.0.0",
+        &["bin/rg"],
+    );
+    let state_file = paths.state_dir.join("rg.json");
+    fs::write(
+        &state_file,
+        r#"{
+  "name": "rg",
+  "versions": [
+    "14.0.0"
+  ],
+  "active": "14.0.0"
+}"#,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        paths.package_store.join("rg/14.0.0"),
+        paths.package_store.join("rg/current"),
+    )
+    .unwrap();
+    fs::create_dir_all(&paths.shim_dir).unwrap();
+    std::os::unix::fs::symlink(
+        paths.package_store.join("rg/current/rg"),
+        paths.shim_dir.join("rg"),
+    )
+    .unwrap();
+
+    let cli = Cli::try_parse_from(["hive", "use", "rg", "14.1.0"]).unwrap();
+    let error = app::run_with_paths(cli, paths.clone()).unwrap_err();
+
+    assert!(error.contains("does not have version"));
+    assert_eq!(
+        fs::read_link(paths.package_store.join("rg/current")).unwrap(),
+        paths.package_store.join("rg/14.0.0")
+    );
+    assert_eq!(
+        fs::read_link(paths.shim_dir.join("rg")).unwrap(),
+        paths.package_store.join("rg/current/rg")
+    );
+}
+
+#[test]
 fn which_reports_active_binary_path_through_current() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
