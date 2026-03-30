@@ -73,6 +73,78 @@ fn use_command_switches_current_version_and_keeps_shims_on_current() {
 }
 
 #[test]
+fn use_command_removes_stale_shims_when_switching_to_fewer_binaries() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_installed_package_with_binaries(
+        &paths,
+        "rg",
+        &["14.0.0", "14.1.0"],
+        "14.0.0",
+        &["bin/rg"],
+    );
+    fs::write(paths.package_store.join("rg/14.0.0/rga"), "stale").unwrap();
+    std::os::unix::fs::symlink(
+        paths.package_store.join("rg/14.0.0"),
+        paths.package_store.join("rg/current"),
+    )
+    .unwrap();
+    fs::create_dir_all(&paths.shim_dir).unwrap();
+    std::os::unix::fs::symlink(
+        paths.package_store.join("rg/current/rg"),
+        paths.shim_dir.join("rg"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        paths.package_store.join("rg/current/rga"),
+        paths.shim_dir.join("rga"),
+    )
+    .unwrap();
+
+    let cli = Cli::try_parse_from(["hive", "use", "rg", "14.1.0"]).unwrap();
+    app::run_with_paths(cli, paths.clone()).unwrap();
+
+    assert_eq!(
+        fs::read_link(paths.package_store.join("rg/current")).unwrap(),
+        paths.package_store.join("rg/14.1.0")
+    );
+    assert!(paths.shim_dir.join("rg").symlink_metadata().is_ok());
+    assert!(paths.shim_dir.join("rga").symlink_metadata().is_err());
+}
+
+#[test]
+fn use_command_does_not_switch_current_when_activation_fails() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_installed_package_with_binaries(
+        &paths,
+        "rg",
+        &["14.0.0", "14.1.0"],
+        "14.0.0",
+        &["bin/rg"],
+    );
+    std::os::unix::fs::symlink(
+        paths.package_store.join("rg/14.0.0"),
+        paths.package_store.join("rg/current"),
+    )
+    .unwrap();
+    fs::create_dir_all(paths.shim_dir.parent().unwrap()).unwrap();
+    fs::write(&paths.shim_dir, "blocker").unwrap();
+
+    let cli = Cli::try_parse_from(["hive", "use", "rg", "14.1.0"]).unwrap();
+    let error = app::run_with_paths(cli, paths.clone()).unwrap_err();
+
+    assert!(error.contains("failed to create"));
+    assert_eq!(
+        fs::read_link(paths.package_store.join("rg/current")).unwrap(),
+        paths.package_store.join("rg/14.0.0")
+    );
+    let store = StateStore::new(paths.state_dir.clone());
+    let package = store.load_package("rg").unwrap().unwrap();
+    assert_eq!(package.active.as_deref(), Some("14.0.0"));
+}
+
+#[test]
 fn which_reports_active_binary_path_through_current() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
