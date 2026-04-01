@@ -15,6 +15,7 @@ This repository currently implements the v1 workflow:
 
 - `hive install <package>`
 - `hive list`
+- `hive sync <owner>/<repo>`
 - `hive use <package> <version>`
 - `hive uninstall <package> <version> [--force]`
 - `hive which <package>`
@@ -82,6 +83,24 @@ Hive refuses to remove the active version unless you pass `--force`:
 hive uninstall rg 14.1.0 --force
 ```
 
+## Sync A Manifest From GitHub
+
+Create or update a local manifest from the latest qualifying GitHub release:
+
+```bash
+hive sync BurntSushi/ripgrep
+```
+
+Synced manifests store their source configuration in the manifest itself:
+
+```toml
+[source.github]
+repo = "BurntSushi/ripgrep"
+channel = "stable"
+```
+
+`hive install` still reads local manifests only. `hive sync` updates one local manifest file in place from GitHub release metadata.
+
 ## Manifest Format
 
 Hive discovers packages from local manifest directories using one of these layouts:
@@ -94,6 +113,10 @@ Example manifest:
 ```toml
 name = "rg"
 version = "14.1.0"
+
+[source.github]
+repo = "BurntSushi/ripgrep"
+channel = "stable"
 
 [platform.linux-x86_64]
 url = "https://example.invalid/rg-14.1.0-x86_64.tar.gz"

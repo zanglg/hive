@@ -1,19 +1,33 @@
 use crate::platform::Platform;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub struct Manifest {
     pub name: String,
     pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ManifestSource>,
     pub platform: BTreeMap<String, Artifact>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct ManifestSource {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<GitHubSource>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct GitHubSource {
+    pub repo: String,
+    pub channel: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Artifact {
     pub url: String,
     pub checksum: String,
@@ -24,6 +38,10 @@ pub struct Artifact {
 impl Manifest {
     pub fn from_toml(contents: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(contents)
+    }
+
+    pub fn to_toml(&self) -> Result<String, String> {
+        toml::to_string(self).map_err(|error| format!("failed to serialize manifest: {error}"))
     }
 
     pub fn artifact_for(&self, platform: Platform) -> Result<&Artifact, String> {

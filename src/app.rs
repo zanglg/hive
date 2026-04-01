@@ -6,6 +6,7 @@ use crate::{
     manifest::ManifestRepository,
     platform::Platform,
     state::{InstalledPackage, StateStore},
+    sync,
 };
 use std::{
     fs,
@@ -79,7 +80,7 @@ pub fn run_capture(cli: Cli, paths: HivePaths) -> Result<String, String> {
 }
 
 fn sync_repo(_paths: &HivePaths, _repo: &str) -> Result<(), String> {
-    Err("sync is not implemented".to_string())
+    sync::sync_repo(_paths, _repo)
 }
 
 fn default_paths() -> Result<HivePaths, String> {
