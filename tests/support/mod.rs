@@ -3,13 +3,17 @@
 use flate2::{Compression, write::GzEncoder};
 use hive::{
     config::HivePaths,
+    manifest::{Artifact, GitHubSource, Manifest, ManifestSource},
     state::{InstalledPackage, StateStore},
 };
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     fs,
-    io,
+    io::{self, Read, Write},
+    net::TcpListener,
     path::{Path, PathBuf},
+    thread,
 };
 use tar::Builder;
 use xz2::write::XzEncoder;
@@ -322,7 +326,7 @@ pub fn write_manifest_with_binaries_with_archive(
     .unwrap();
 }
 
-fn current_platform_key() -> &'static str {
+pub fn current_platform_key() -> &'static str {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => "linux-x86_64",
         ("linux", "aarch64") => "linux-aarch64",
@@ -330,4 +334,202 @@ fn current_platform_key() -> &'static str {
         ("macos", "aarch64") => "macos-aarch64",
         _ => panic!("unsupported test host"),
     }
+}
+
+pub fn platform_archive_name(package: &str, version: &str) -> String {
+    match current_platform_key() {
+        "linux-x86_64" => format!("{package}-{version}-x86_64-unknown-linux-musl.tar.gz"),
+        "linux-aarch64" => format!("{package}-{version}-aarch64-unknown-linux-musl.tar.gz"),
+        "macos-x86_64" => format!("{package}-{version}-x86_64-apple-darwin.tar.gz"),
+        "macos-aarch64" => format!("{package}-{version}-aarch64-apple-darwin.tar.gz"),
+        _ => panic!("unsupported test host"),
+    }
+}
+
+pub fn manifest_with_github_source(
+    package: &str,
+    version: &str,
+    repo: &str,
+    channel: &str,
+) -> Manifest {
+    Manifest {
+        name: package.to_string(),
+        version: version.to_string(),
+        source: Some(ManifestSource {
+            github: Some(GitHubSource {
+                repo: repo.to_string(),
+                channel: channel.to_string(),
+            }),
+        }),
+        platform: BTreeMap::from([(
+            current_platform_key().to_string(),
+            Artifact {
+                url: "https://example.invalid/rg.tar.gz".to_string(),
+                checksum: "sha256:abc".to_string(),
+                archive: "tar.gz".to_string(),
+                binaries: vec![package.to_string()],
+            },
+        )]),
+    }
+}
+
+pub fn release_json(
+    tag_name: &str,
+    prerelease: bool,
+    draft: bool,
+    assets: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "tag_name": tag_name,
+        "prerelease": prerelease,
+        "draft": draft,
+        "assets": assets,
+    })
+}
+
+pub fn asset_json(name: &str, browser_download_url: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "browser_download_url": browser_download_url,
+    })
+}
+
+pub struct MockGitHubServer {
+    api_base: String,
+    join_handle: Option<thread::JoinHandle<()>>,
+}
+
+impl MockGitHubServer {
+    pub fn api_base(&self) -> &str {
+        &self.api_base
+    }
+}
+
+impl Drop for MockGitHubServer {
+    fn drop(&mut self) {
+        if let Some(join_handle) = self.join_handle.take() {
+            join_handle.join().unwrap();
+        }
+    }
+}
+
+pub fn spawn_github_server(releases: Vec<serde_json::Value>) -> MockGitHubServer {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let api_base = format!("http://{}", listener.local_addr().unwrap());
+    let body = serde_json::to_vec(&releases).unwrap();
+
+    let join_handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).unwrap();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+        stream.write_all(&body).unwrap();
+        stream.flush().unwrap();
+    });
+
+    MockGitHubServer {
+        api_base,
+        join_handle: Some(join_handle),
+    }
+}
+
+pub fn write_named_tar_gz(root: &Path, archive_name: &str, binary_name: &str) -> PathBuf {
+    let source_dir = root.join(format!("{archive_name}-source"));
+    fs::create_dir_all(&source_dir).unwrap();
+    fs::write(source_dir.join(binary_name), "stub-binary").unwrap();
+
+    let archive_path = root.join(archive_name);
+    write_tar_gz(&archive_path, &source_dir, binary_name);
+    archive_path
+}
+
+pub fn file_url(path: &Path) -> String {
+    format!("file://{}", path.display())
+}
+
+pub fn write_manifest_with_github_source_and_binaries(
+    paths: &HivePaths,
+    package: &str,
+    version: &str,
+    repo: &str,
+    channel: &str,
+    binary_names: &[&str],
+) {
+    let mut manifest = manifest_with_github_source(package, version, repo, channel);
+    manifest
+        .platform
+        .get_mut(current_platform_key())
+        .unwrap()
+        .binaries = binary_names.iter().map(|value| value.to_string()).collect();
+    fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
+    fs::write(
+        paths.manifest_dirs[0].join(format!("{package}.toml")),
+        manifest.to_toml().unwrap(),
+    )
+    .unwrap();
+}
+
+pub fn write_manifest_with_github_source_and_checksum(
+    paths: &HivePaths,
+    package: &str,
+    version: &str,
+    repo: &str,
+    channel: &str,
+    url: &str,
+    checksum: &str,
+) {
+    let mut manifest = manifest_with_github_source(package, version, repo, channel);
+    let artifact = manifest.platform.get_mut(current_platform_key()).unwrap();
+    artifact.url = url.to_string();
+    artifact.checksum = checksum.to_string();
+    fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
+    fs::write(
+        paths.manifest_dirs[0].join(format!("{package}.toml")),
+        manifest.to_toml().unwrap(),
+    )
+    .unwrap();
+}
+
+pub fn write_manifest_with_github_source_platforms(
+    paths: &HivePaths,
+    package: &str,
+    version: &str,
+    repo: &str,
+    channel: &str,
+    platforms: &[(&str, &str, &str, &[&str])],
+) {
+    let manifest = Manifest {
+        name: package.to_string(),
+        version: version.to_string(),
+        source: Some(ManifestSource {
+            github: Some(GitHubSource {
+                repo: repo.to_string(),
+                channel: channel.to_string(),
+            }),
+        }),
+        platform: platforms
+            .iter()
+            .map(|(platform, url, checksum, binaries)| {
+                (
+                    (*platform).to_string(),
+                    Artifact {
+                        url: (*url).to_string(),
+                        checksum: (*checksum).to_string(),
+                        archive: "tar.gz".to_string(),
+                        binaries: binaries.iter().map(|value| (*value).to_string()).collect(),
+                    },
+                )
+            })
+            .collect(),
+    };
+    fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
+    fs::write(
+        paths.manifest_dirs[0].join(format!("{package}.toml")),
+        manifest.to_toml().unwrap(),
+    )
+    .unwrap();
 }

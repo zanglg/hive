@@ -77,6 +77,49 @@ fn parses_manifest_and_resolves_platform_artifact() {
 }
 
 #[test]
+fn parses_manifest_with_optional_github_source() {
+    let contents = r#"
+name = "rg"
+version = "14.1.0"
+
+[source.github]
+repo = "BurntSushi/ripgrep"
+channel = "stable"
+
+[platform.linux-x86_64]
+url = "https://example.invalid/rg.tar.gz"
+checksum = "sha256:abc"
+archive = "tar.gz"
+binaries = ["rg"]
+"#;
+
+    let manifest = Manifest::from_toml(contents).unwrap();
+    let source = manifest.source.as_ref().unwrap().github.as_ref().unwrap();
+
+    assert_eq!(source.repo, "BurntSushi/ripgrep");
+    assert_eq!(source.channel, "stable");
+}
+
+#[test]
+fn renders_manifest_with_github_source_block_before_platforms() {
+    let manifest = tests_support::manifest_with_github_source(
+        "rg",
+        "14.1.0",
+        "BurntSushi/ripgrep",
+        "stable",
+    );
+    let rendered = manifest.to_toml().unwrap();
+
+    let source_block = "[source.github]\nrepo = \"BurntSushi/ripgrep\"\nchannel = \"stable\"";
+    let platform_block = format!("[platform.{}]", tests_support::current_platform_key());
+
+    let source_index = rendered.find(source_block).unwrap();
+    let platform_index = rendered.find(&platform_block).unwrap();
+
+    assert!(source_index < platform_index);
+}
+
+#[test]
 fn finds_manifest_from_flat_or_nested_layout() {
     let repo = ManifestRepository::new(vec![PathBuf::from("tests/fixtures/manifests")]);
     let manifest_path = repo.find("rg").unwrap();
