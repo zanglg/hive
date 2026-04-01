@@ -36,6 +36,7 @@ pub fn run_with_paths(cli: Cli, paths: HivePaths) -> Result<(), String> {
             }
             Ok(())
         }
+        Commands::Sync { repo } => sync_repo(&paths, &repo),
         Commands::Use { package, version } => use_package(&paths, &package, &version),
         Commands::Uninstall {
             package,
@@ -57,6 +58,10 @@ pub fn run_capture(cli: Cli, paths: HivePaths) -> Result<String, String> {
             Ok(String::new())
         }
         Commands::List => list_packages(&paths),
+        Commands::Sync { repo } => {
+            sync_repo(&paths, &repo)?;
+            Ok(String::new())
+        }
         Commands::Use { package, version } => {
             use_package(&paths, &package, &version)?;
             Ok(String::new())
@@ -71,6 +76,10 @@ pub fn run_capture(cli: Cli, paths: HivePaths) -> Result<String, String> {
         }
         Commands::Which { package } => which_package(&paths, &package),
     }
+}
+
+fn sync_repo(_paths: &HivePaths, _repo: &str) -> Result<(), String> {
+    Err("sync is not implemented".to_string())
 }
 
 fn default_paths() -> Result<HivePaths, String> {

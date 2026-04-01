@@ -13,6 +13,9 @@ pub enum Commands {
         package: String,
     },
     List,
+    Sync {
+        repo: String,
+    },
     Use {
         package: String,
         version: String,
