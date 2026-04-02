@@ -20,10 +20,10 @@ pub struct GitHubClient {
 }
 
 impl GitHubClient {
-    pub fn new(api_base: impl Into<String>) -> Self {
+    pub fn new(api_base: impl Into<String>, http: reqwest::blocking::Client) -> Self {
         Self {
             api_base: api_base.into(),
-            http: reqwest::blocking::Client::new(),
+            http,
         }
     }
 

@@ -13,7 +13,9 @@ use std::{
     io::{self, Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
+    sync::{Mutex, MutexGuard, OnceLock},
     thread,
+    time::Duration,
 };
 use tar::Builder;
 use xz2::write::XzEncoder;
@@ -38,11 +40,7 @@ pub fn write_tar_xz(archive_path: &Path, source_dir: &Path, file_name: &str) {
     builder.into_inner().unwrap().finish().unwrap();
 }
 
-pub fn write_tar_gz_with_wrapper(
-    archive_path: &Path,
-    source_dir: &Path,
-    wrapper_dir: &str,
-) {
+pub fn write_tar_gz_with_wrapper(archive_path: &Path, source_dir: &Path, wrapper_dir: &str) {
     let tar_gz = fs::File::create(archive_path).unwrap();
     let encoder = GzEncoder::new(tar_gz, Compression::default());
     let mut builder = Builder::new(encoder);
@@ -50,11 +48,7 @@ pub fn write_tar_gz_with_wrapper(
     builder.into_inner().unwrap().finish().unwrap();
 }
 
-pub fn write_tar_gz_with_symlink(
-    archive_path: &Path,
-    link_path: &str,
-    link_target: &Path,
-) {
+pub fn write_tar_gz_with_symlink(archive_path: &Path, link_path: &str, link_target: &Path) {
     let tar_gz = fs::File::create(archive_path).unwrap();
     let encoder = GzEncoder::new(tar_gz, Compression::default());
     let mut builder = Builder::new(encoder);
@@ -104,7 +98,15 @@ pub fn seed_install_fixture(paths: &HivePaths, package: &str, version: &str) {
         "sha256:{:x}",
         Sha256::digest(fs::read(&archive_path).unwrap())
     );
-    write_manifest_with_archive(paths, package, version, &archive_path, &checksum, package, "tar.gz");
+    write_manifest_with_archive(
+        paths,
+        package,
+        version,
+        &archive_path,
+        &checksum,
+        package,
+        "tar.gz",
+    );
 }
 
 pub fn seed_install_fixture_tar_xz(paths: &HivePaths, package: &str, version: &str) {
@@ -120,7 +122,15 @@ pub fn seed_install_fixture_tar_xz(paths: &HivePaths, package: &str, version: &s
         "sha256:{:x}",
         Sha256::digest(fs::read(&archive_path).unwrap())
     );
-    write_manifest_with_archive(paths, package, version, &archive_path, &checksum, package, "tar.xz");
+    write_manifest_with_archive(
+        paths,
+        package,
+        version,
+        &archive_path,
+        &checksum,
+        package,
+        "tar.xz",
+    );
 }
 
 pub fn seed_bad_checksum_fixture(paths: &HivePaths, package: &str, version: &str) {
@@ -145,7 +155,15 @@ pub fn seed_missing_binary_fixture(paths: &HivePaths, package: &str, version: &s
         "sha256:{:x}",
         Sha256::digest(fs::read(&archive_path).unwrap())
     );
-    write_manifest_with_archive(paths, package, version, &archive_path, &checksum, package, "tar.gz");
+    write_manifest_with_archive(
+        paths,
+        package,
+        version,
+        &archive_path,
+        &checksum,
+        package,
+        "tar.gz",
+    );
 }
 
 pub fn seed_symlink_binary_fixture(paths: &HivePaths, package: &str, version: &str) {
@@ -415,25 +433,101 @@ impl Drop for MockGitHubServer {
 
 pub fn spawn_github_server(releases: Vec<serde_json::Value>) -> MockGitHubServer {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
     let api_base = format!("http://{}", listener.local_addr().unwrap());
     let body = serde_json::to_vec(&releases).unwrap();
 
     let join_handle = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut request = [0_u8; 4096];
-        let _ = stream.read(&mut request).unwrap();
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        );
-        stream.write_all(response.as_bytes()).unwrap();
-        stream.write_all(&body).unwrap();
-        stream.flush().unwrap();
+        for _ in 0..200 {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut request = [0_u8; 4096];
+                    let _ = stream.read(&mut request).unwrap();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).unwrap();
+                    stream.write_all(&body).unwrap();
+                    stream.flush().unwrap();
+                    return;
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("failed to accept mock GitHub request: {error}"),
+            }
+        }
     });
 
     MockGitHubServer {
         api_base,
         join_handle: Some(join_handle),
+    }
+}
+
+pub struct MockHttpServer {
+    url: String,
+    join_handle: Option<thread::JoinHandle<()>>,
+}
+
+impl MockHttpServer {
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+}
+
+impl Drop for MockHttpServer {
+    fn drop(&mut self) {
+        if let Some(join_handle) = self.join_handle.take() {
+            join_handle.join().unwrap();
+        }
+    }
+}
+
+pub fn spawn_http_server(body: Vec<u8>, content_type: &str) -> MockHttpServer {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let content_type = content_type.to_string();
+
+    let join_handle = thread::spawn(move || {
+        for _ in 0..200 {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut request = [0_u8; 4096];
+                    let _ = stream.read(&mut request).unwrap();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).unwrap();
+                    stream.write_all(&body).unwrap();
+                    stream.flush().unwrap();
+                    return;
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("failed to accept mock HTTP request: {error}"),
+            }
+        }
+    });
+
+    MockHttpServer {
+        url,
+        join_handle: Some(join_handle),
+    }
+}
+
+pub struct EnvLock {
+    _guard: MutexGuard<'static, ()>,
+}
+
+pub fn lock_env() -> EnvLock {
+    static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+    EnvLock {
+        _guard: ENV_MUTEX.get_or_init(|| Mutex::new(())).lock().unwrap(),
     }
 }
 

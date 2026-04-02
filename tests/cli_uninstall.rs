@@ -66,11 +66,13 @@ fn forced_uninstall_removes_active_exported_shims() {
     app::run_with_paths(cli, paths.clone()).unwrap();
 
     assert!(!paths.package_store.join("ripgrep/14.1.0").exists());
-    assert!(paths
-        .package_store
-        .join("ripgrep/current")
-        .symlink_metadata()
-        .is_err());
+    assert!(
+        paths
+            .package_store
+            .join("ripgrep/current")
+            .symlink_metadata()
+            .is_err()
+    );
     assert!(paths.shim_dir.join("rg").symlink_metadata().is_err());
     assert!(paths.shim_dir.join("rga").symlink_metadata().is_err());
 }
@@ -99,10 +101,15 @@ fn forced_uninstall_removes_current_symlink_and_nested_binary_shims() {
     )
     .unwrap();
 
-    let cli =
-        Cli::try_parse_from(["hive", "uninstall", "helix", "25.07.1", "--force"]).unwrap();
+    let cli = Cli::try_parse_from(["hive", "uninstall", "helix", "25.07.1", "--force"]).unwrap();
     app::run_with_paths(cli, paths.clone()).unwrap();
 
-    assert!(paths.package_store.join("helix/current").symlink_metadata().is_err());
+    assert!(
+        paths
+            .package_store
+            .join("helix/current")
+            .symlink_metadata()
+            .is_err()
+    );
     assert!(paths.shim_dir.join("hx").symlink_metadata().is_err());
 }

@@ -1,7 +1,6 @@
 use sha2::{Digest, Sha256};
 use std::{
-    fs,
-    io,
+    fs, io,
     path::{Component, Path, PathBuf},
 };
 
@@ -141,7 +140,8 @@ fn normalize_extracted_layout(temp_dir: &Path, declared_binaries: &[String]) -> 
     for child in fs::read_dir(&entry_path)
         .map_err(|error| format!("failed to inspect {}: {error}", entry_path.display()))?
     {
-        let child = child.map_err(|error| format!("failed to inspect {}: {error}", entry_path.display()))?;
+        let child = child
+            .map_err(|error| format!("failed to inspect {}: {error}", entry_path.display()))?;
         let destination = temp_dir.join(child.file_name());
         fs::rename(child.path(), &destination).map_err(|error| {
             format!(
@@ -178,12 +178,7 @@ pub(crate) fn path_exists_within_tree(root: &Path, relative_path: &str) -> Resul
         let metadata = match fs::symlink_metadata(&current) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => {
-                return Err(format!(
-                    "failed to inspect {}: {error}",
-                    current.display()
-                ))
-            }
+            Err(error) => return Err(format!("failed to inspect {}: {error}", current.display())),
         };
 
         if metadata.file_type().is_symlink() {

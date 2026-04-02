@@ -7,5 +7,6 @@ pub mod github;
 pub mod installer;
 pub mod manifest;
 pub mod platform;
+pub mod proxy;
 pub mod state;
 pub mod sync;

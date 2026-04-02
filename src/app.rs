@@ -5,12 +5,13 @@ use crate::{
     installer::{ArchiveKind, Installer},
     manifest::ManifestRepository,
     platform::Platform,
+    proxy,
     state::{InstalledPackage, StateStore},
     sync,
 };
 use std::{
-    fs,
     collections::HashSet,
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -96,8 +97,9 @@ fn install_package(paths: &HivePaths, package: &str) -> Result<(), String> {
     let platform = Platform::current()?;
     let artifact = manifest.artifact_for(platform)?.clone();
     let archive_kind = ArchiveKind::parse(&artifact.archive)?;
+    let http = proxy::build_http_client()?;
 
-    let download_path = download_to_cache(paths, &artifact.url, package, &manifest.version)?;
+    let download_path = download_to_cache(&http, paths, &artifact.url, package, &manifest.version)?;
     let installer = Installer::new(paths.package_store.clone());
     let install_dir = installer.install_archive(
         &manifest.name,
@@ -176,7 +178,8 @@ fn install_package(paths: &HivePaths, package: &str) -> Result<(), String> {
             }
             return Err(error);
         }
-        if let Err(error) = remove_stale_package_shims(&paths.shim_dir, &package_root, &desired_names)
+        if let Err(error) =
+            remove_stale_package_shims(&paths.shim_dir, &package_root, &desired_names)
         {
             let _ = restore_package_current(&current_dir, previous_current.as_deref());
             if previous_current.is_none() {
@@ -393,7 +396,10 @@ fn remove_stale_package_shims(
     Ok(())
 }
 
-fn restore_package_current(current_dir: &Path, previous_current: Option<&Path>) -> Result<(), String> {
+fn restore_package_current(
+    current_dir: &Path,
+    previous_current: Option<&Path>,
+) -> Result<(), String> {
     if let Some(previous_current) = previous_current {
         set_package_current(current_dir, previous_current)
     } else if current_dir.symlink_metadata().is_ok() {
@@ -451,12 +457,8 @@ fn remove_package_current(install_dir: &Path) -> Result<(), String> {
         } else {
             fs::remove_file(&current_dir)
         };
-        remove_result.map_err(|error| {
-            format!(
-                "failed to remove {}: {error}",
-                current_dir.display()
-            )
-        })?;
+        remove_result
+            .map_err(|error| format!("failed to remove {}: {error}", current_dir.display()))?;
     }
 
     Ok(())
@@ -469,12 +471,8 @@ fn set_package_current(current_dir: &Path, install_dir: &Path) -> Result<(), Str
         } else {
             fs::remove_file(current_dir)
         };
-        remove_result.map_err(|error| {
-            format!(
-                "failed to replace {}: {error}",
-                current_dir.display()
-            )
-        })?;
+        remove_result
+            .map_err(|error| format!("failed to replace {}: {error}", current_dir.display()))?;
     }
 
     if let Some(parent) = current_dir.parent() {
@@ -482,15 +480,12 @@ fn set_package_current(current_dir: &Path, install_dir: &Path) -> Result<(), Str
             .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
     }
 
-    std::os::unix::fs::symlink(install_dir, current_dir).map_err(|error| {
-        format!(
-            "failed to link {}: {error}",
-            current_dir.display()
-        )
-    })
+    std::os::unix::fs::symlink(install_dir, current_dir)
+        .map_err(|error| format!("failed to link {}: {error}", current_dir.display()))
 }
 
 fn download_to_cache(
+    http: &reqwest::blocking::Client,
     paths: &HivePaths,
     url: &str,
     package: &str,
@@ -506,7 +501,7 @@ fn download_to_cache(
         return Ok(cache_path);
     }
 
-    let response = reqwest::blocking::get(url).map_err(|error| error.to_string())?;
+    let response = http.get(url).send().map_err(|error| error.to_string())?;
     let response = response
         .error_for_status()
         .map_err(|error| error.to_string())?;

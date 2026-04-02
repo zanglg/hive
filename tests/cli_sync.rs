@@ -6,7 +6,7 @@ use hive::{
     app,
     cli::{Cli, Commands},
     github::GitHubClient,
-    sync,
+    proxy, sync,
 };
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -50,8 +50,10 @@ fn stable_channel_skips_drafts_and_prereleases() {
         tests_support::release_json("v1.9.0", false, false, vec![]),
     ]);
 
-    let client = GitHubClient::new(server.api_base());
-    let release = client.latest_release("BurntSushi/ripgrep", "stable").unwrap();
+    let client = GitHubClient::new(server.api_base(), proxy::build_http_client().unwrap());
+    let release = client
+        .latest_release("BurntSushi/ripgrep", "stable")
+        .unwrap();
 
     assert_eq!(release.tag_name, "v2.0.0");
 }
@@ -63,10 +65,37 @@ fn nightly_channel_allows_prereleases() {
         tests_support::release_json("v1.9.0", false, false, vec![]),
     ]);
 
-    let client = GitHubClient::new(server.api_base());
-    let release = client.latest_release("BurntSushi/ripgrep", "nightly").unwrap();
+    let client = GitHubClient::new(server.api_base(), proxy::build_http_client().unwrap());
+    let release = client
+        .latest_release("BurntSushi/ripgrep", "nightly")
+        .unwrap();
 
     assert_eq!(release.tag_name, "v2.0.0-beta.1");
+}
+
+#[test]
+fn sync_rejects_invalid_hive_http_proxy_for_github_requests() {
+    let _env = tests_support::lock_env();
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let server = tests_support::spawn_github_server(vec![tests_support::release_json(
+        "v14.1.0",
+        false,
+        false,
+        vec![],
+    )]);
+
+    unsafe {
+        std::env::set_var("HIVE_HTTP_PROXY", "://bad-proxy");
+    }
+    let error =
+        sync::sync_repo_with_api_base(&paths, "BurntSushi/ripgrep", server.api_base()).unwrap_err();
+    unsafe {
+        std::env::remove_var("HIVE_HTTP_PROXY");
+    }
+
+    assert!(error.contains("HIVE_HTTP_PROXY"));
+    assert!(error.contains("invalid proxy URL"));
 }
 
 #[test]
@@ -139,8 +168,8 @@ fn sync_leaves_existing_manifest_unchanged_when_asset_mapping_is_ambiguous() {
         )],
     )]);
 
-    let error = sync::sync_repo_with_api_base(&paths, "BurntSushi/ripgrep", server.api_base())
-        .unwrap_err();
+    let error =
+        sync::sync_repo_with_api_base(&paths, "BurntSushi/ripgrep", server.api_base()).unwrap_err();
 
     assert!(error.contains("could not map GitHub assets"));
     let after = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
@@ -158,8 +187,18 @@ fn sync_leaves_existing_manifest_unchanged_when_release_drops_existing_platforms
         "BurntSushi/ripgrep",
         "stable",
         &[
-            ("linux-x86_64", "https://example.invalid/linux.tar.gz", "sha256:linux", &["rg"]),
-            ("macos-x86_64", "https://example.invalid/macos.tar.gz", "sha256:macos", &["rg"]),
+            (
+                "linux-x86_64",
+                "https://example.invalid/linux.tar.gz",
+                "sha256:linux",
+                &["rg"],
+            ),
+            (
+                "macos-x86_64",
+                "https://example.invalid/macos.tar.gz",
+                "sha256:macos",
+                &["rg"],
+            ),
         ],
     );
     let before = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
@@ -175,8 +214,8 @@ fn sync_leaves_existing_manifest_unchanged_when_release_drops_existing_platforms
         )],
     )]);
 
-    let error = sync::sync_repo_with_api_base(&paths, "BurntSushi/ripgrep", server.api_base())
-        .unwrap_err();
+    let error =
+        sync::sync_repo_with_api_base(&paths, "BurntSushi/ripgrep", server.api_base()).unwrap_err();
 
     assert!(error.contains("could not map GitHub assets"));
     let after = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
@@ -213,8 +252,8 @@ fn sync_rejects_ambiguous_duplicate_platform_assets() {
         ],
     )]);
 
-    let error = sync::sync_repo_with_api_base(&paths, "BurntSushi/ripgrep", server.api_base())
-        .unwrap_err();
+    let error =
+        sync::sync_repo_with_api_base(&paths, "BurntSushi/ripgrep", server.api_base()).unwrap_err();
 
     assert!(error.contains("could not map GitHub assets"));
     assert!(!paths.manifest_dirs[0].join("ripgrep.toml").exists());
@@ -226,7 +265,10 @@ fn sync_is_noop_when_release_and_artifacts_are_unchanged() {
     let paths = tests_support::fixture_paths(temp.path());
     let archive_name = tests_support::platform_archive_name("ripgrep", "14.1.0");
     let archive_path = tests_support::write_named_tar_gz(temp.path(), &archive_name, "ripgrep");
-    let checksum = format!("sha256:{:x}", Sha256::digest(fs::read(&archive_path).unwrap()));
+    let checksum = format!(
+        "sha256:{:x}",
+        Sha256::digest(fs::read(&archive_path).unwrap())
+    );
     tests_support::write_manifest_with_github_source_and_checksum(
         &paths,
         "ripgrep",
