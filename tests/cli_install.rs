@@ -102,12 +102,8 @@ binaries = ["rg"]
 
 #[test]
 fn renders_manifest_with_github_source_block_before_platforms() {
-    let manifest = tests_support::manifest_with_github_source(
-        "rg",
-        "14.1.0",
-        "BurntSushi/ripgrep",
-        "stable",
-    );
+    let manifest =
+        tests_support::manifest_with_github_source("rg", "14.1.0", "BurntSushi/ripgrep", "stable");
     let rendered = manifest.to_toml().unwrap();
 
     let source_block = "[source.github]\nrepo = \"BurntSushi/ripgrep\"\nchannel = \"stable\"";
@@ -196,7 +192,8 @@ fn install_strips_single_wrapper_directory_before_validating_binaries() {
 }
 
 #[test]
-fn install_keeps_single_wrapper_directory_unchanged_when_declared_binaries_only_exist_via_symlink() {
+fn install_keeps_single_wrapper_directory_unchanged_when_declared_binaries_only_exist_via_symlink()
+{
     let temp = tempdir().unwrap();
     let archive_path = temp.path().join("rg.tar.gz");
     let payload_dir = temp.path().join("payload");
@@ -257,6 +254,48 @@ fn install_keeps_single_wrapper_directory_unchanged_when_declared_binaries_are_m
 
     assert!(install_dir.join("release/share/notes.txt").exists());
     assert!(!install_dir.join("share/notes.txt").exists());
+}
+
+#[test]
+fn install_rejects_invalid_hive_http_proxy_for_http_downloads() {
+    let _env = tests_support::lock_env();
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let archive_name = "rg.tar.gz";
+    let archive_path = tests_support::write_named_tar_gz(temp.path(), archive_name, "rg");
+    let archive_bytes = fs::read(&archive_path).unwrap();
+    let checksum = format!("sha256:{:x}", Sha256::digest(&archive_bytes));
+    let server = tests_support::spawn_http_server(archive_bytes, "application/gzip");
+
+    tests_support::write_manifest_with_binaries_with_archive(
+        &paths,
+        "rg",
+        "14.1.0",
+        &archive_path,
+        &checksum,
+        &["rg"],
+        "tar.gz",
+    );
+    let manifest_path = paths.manifest_dirs[0].join("rg.toml");
+    let manifest = fs::read_to_string(&manifest_path)
+        .unwrap()
+        .replace(&format!("file://{}", archive_path.display()), server.url());
+    fs::write(&manifest_path, manifest).unwrap();
+
+    unsafe {
+        std::env::set_var("HIVE_HTTP_PROXY", "://bad-proxy");
+    }
+    let error = app::run_capture(
+        Cli::try_parse_from(["hive", "install", "rg"]).unwrap(),
+        paths,
+    )
+    .unwrap_err();
+    unsafe {
+        std::env::remove_var("HIVE_HTTP_PROXY");
+    }
+
+    assert!(error.contains("HIVE_HTTP_PROXY"));
+    assert!(error.contains("invalid proxy URL"));
 }
 
 #[test]
@@ -457,7 +496,13 @@ fn install_command_does_not_switch_current_when_activation_fails() {
     let error = app::run_with_paths(cli, paths.clone()).unwrap_err();
 
     assert!(error.contains("failed to create"));
-    assert!(paths.package_store.join("rg/current").symlink_metadata().is_err());
+    assert!(
+        paths
+            .package_store
+            .join("rg/current")
+            .symlink_metadata()
+            .is_err()
+    );
 }
 
 #[test]
@@ -474,10 +519,7 @@ fn install_command_rejects_duplicate_binary_basenames() {
     fs::write(&alt_rg, "stub-binary").unwrap();
     tests_support::write_tar_gz_files(
         &archive_path,
-        &[
-            (bin_rg.as_path(), "bin/rg"),
-            (alt_rg.as_path(), "alt/rg"),
-        ],
+        &[(bin_rg.as_path(), "bin/rg"), (alt_rg.as_path(), "alt/rg")],
     );
 
     let bytes = fs::read(&archive_path).unwrap();
@@ -496,7 +538,13 @@ fn install_command_rejects_duplicate_binary_basenames() {
     let error = app::run_with_paths(cli, paths.clone()).unwrap_err();
 
     assert!(error.contains("duplicate shim name"));
-    assert!(paths.package_store.join("rg/current").symlink_metadata().is_err());
+    assert!(
+        paths
+            .package_store
+            .join("rg/current")
+            .symlink_metadata()
+            .is_err()
+    );
 }
 
 #[test]
@@ -519,7 +567,13 @@ fn install_command_rolls_back_shims_when_state_save_fails_after_activation() {
     let error = app::run_with_paths(cli, paths.clone()).unwrap_err();
 
     assert!(error.contains("failed to write"));
-    assert!(paths.package_store.join("rg/current").symlink_metadata().is_err());
+    assert!(
+        paths
+            .package_store
+            .join("rg/current")
+            .symlink_metadata()
+            .is_err()
+    );
     assert!(paths.shim_dir.join("rg").symlink_metadata().is_err());
 }
 

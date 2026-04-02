@@ -101,6 +101,17 @@ channel = "stable"
 
 `hive install` still reads local manifests only. `hive sync` updates one local manifest file in place from GitHub release metadata.
 
+## Proxy Environment
+
+Hive resolves proxy settings per process for HTTP and HTTPS requests made by `hive install` and `hive sync`.
+
+- `HIVE_HTTP_PROXY`, then `HTTP_PROXY`, then `http_proxy`
+- `HIVE_HTTPS_PROXY`, then `HTTPS_PROXY`, then `https_proxy`
+- `HIVE_ALL_PROXY`, then `ALL_PROXY`, then `all_proxy`
+- `HIVE_NO_PROXY`, then `NO_PROXY`, then `no_proxy`
+
+Hive-specific variables override the standard ones. Proxy authentication is supported only when credentials are embedded in the proxy URL, for example `http://user:pass@proxy.internal:8080`.
+
 ## Manifest Format
 
 Hive discovers packages from local manifest directories using one of these layouts:

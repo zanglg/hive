@@ -2,6 +2,7 @@ use crate::{
     config::HivePaths,
     github::{GitHubClient, Release},
     manifest::{Artifact, GitHubSource, Manifest, ManifestSource},
+    proxy,
 };
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs, path::PathBuf};
@@ -12,20 +13,24 @@ pub fn sync_repo(paths: &HivePaths, repo: &str) -> Result<(), String> {
     sync_repo_with_api_base(paths, repo, DEFAULT_GITHUB_API_BASE)
 }
 
-pub fn sync_repo_with_api_base(paths: &HivePaths, repo: &str, api_base: &str) -> Result<(), String> {
+pub fn sync_repo_with_api_base(
+    paths: &HivePaths,
+    repo: &str,
+    api_base: &str,
+) -> Result<(), String> {
     let (_, package) = parse_repo(repo)?;
     let manifest_path = paths.manifest_dirs[0].join(format!("{package}.toml"));
-    let existing = if manifest_path.exists() {
-        Some(
-            Manifest::from_toml(
-                &fs::read_to_string(&manifest_path)
-                    .map_err(|error| format!("failed to read {}: {error}", manifest_path.display()))?,
+    let existing =
+        if manifest_path.exists() {
+            Some(
+                Manifest::from_toml(&fs::read_to_string(&manifest_path).map_err(|error| {
+                    format!("failed to read {}: {error}", manifest_path.display())
+                })?)
+                .map_err(|error| format!("failed to parse {}: {error}", manifest_path.display()))?,
             )
-            .map_err(|error| format!("failed to parse {}: {error}", manifest_path.display()))?,
-        )
-    } else {
-        None
-    };
+        } else {
+            None
+        };
 
     let source = existing
         .as_ref()
@@ -41,16 +46,21 @@ pub fn sync_repo_with_api_base(paths: &HivePaths, repo: &str, api_base: &str) ->
         return Err(format!("stored GitHub repo does not match `{repo}`"));
     }
 
-    let client = GitHubClient::new(api_base);
+    let client = GitHubClient::new(api_base, proxy::build_http_client()?);
     let release = client.latest_release(repo, &source.channel)?;
-    let manifest = build_manifest_from_release(package, &source, existing.as_ref(), &release, &client)?;
+    let manifest =
+        build_manifest_from_release(package, &source, existing.as_ref(), &release, &client)?;
 
     if existing.as_ref() == Some(&manifest) {
         return Ok(());
     }
 
-    fs::create_dir_all(&paths.manifest_dirs[0])
-        .map_err(|error| format!("failed to create {}: {error}", paths.manifest_dirs[0].display()))?;
+    fs::create_dir_all(&paths.manifest_dirs[0]).map_err(|error| {
+        format!(
+            "failed to create {}: {error}",
+            paths.manifest_dirs[0].display()
+        )
+    })?;
     fs::write(&manifest_path, manifest.to_toml()?)
         .map_err(|error| format!("failed to write {}: {error}", manifest_path.display()))
 }
@@ -98,14 +108,12 @@ fn build_manifest_from_release(
     }
 
     if platform.is_empty()
-        || existing
-            .map(|manifest| {
-                manifest
-                    .platform
-                    .keys()
-                    .all(|platform_key| platform.contains_key(platform_key))
-            })
-            == Some(false)
+        || existing.map(|manifest| {
+            manifest
+                .platform
+                .keys()
+                .all(|platform_key| platform.contains_key(platform_key))
+        }) == Some(false)
     {
         return Err(format!(
             "could not map GitHub assets from release `{}` into supported Hive platforms",
@@ -140,10 +148,7 @@ fn parse_repo(repo: &str) -> Result<(&str, &str), String> {
 }
 
 fn normalize_version(tag_name: &str) -> String {
-    tag_name
-        .strip_prefix('v')
-        .unwrap_or(tag_name)
-        .to_string()
+    tag_name.strip_prefix('v').unwrap_or(tag_name).to_string()
 }
 
 fn map_asset_to_platform(name: &str) -> Option<&'static str> {
