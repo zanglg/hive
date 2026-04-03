@@ -99,6 +99,25 @@ fn sync_rejects_invalid_hive_http_proxy_for_github_requests() {
 }
 
 #[test]
+fn sync_rejects_invalid_hive_insecure_ssl_value_for_github_requests() {
+    let _env = tests_support::lock_env();
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+
+    unsafe {
+        std::env::set_var("HIVE_INSECURE_SSL", "maybe");
+    }
+    let error = sync::sync_repo_with_api_base(&paths, "BurntSushi/ripgrep", "http://127.0.0.1:9")
+        .unwrap_err();
+    unsafe {
+        std::env::remove_var("HIVE_INSECURE_SSL");
+    }
+
+    assert!(error.contains("HIVE_INSECURE_SSL"));
+    assert!(error.contains("invalid boolean value"));
+}
+
+#[test]
 fn first_sync_creates_manifest_with_stable_channel_and_checksum() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());

@@ -109,6 +109,7 @@ Hive resolves proxy settings per process for HTTP and HTTPS requests made by `hi
 - `HIVE_HTTPS_PROXY`, then `HTTPS_PROXY`, then `https_proxy`
 - `HIVE_ALL_PROXY`, then `ALL_PROXY`, then `all_proxy`
 - `HIVE_NO_PROXY`, then `NO_PROXY`, then `no_proxy`
+- `HIVE_INSECURE_SSL=1` disables TLS certificate verification for all HTTPS requests made by the current Hive process. Use it only in controlled environments such as local testing or corporate interception proxy setups.
 
 Hive-specific variables override the standard ones. Proxy authentication is supported only when credentials are embedded in the proxy URL, for example `http://user:pass@proxy.internal:8080`.
 

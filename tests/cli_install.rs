@@ -299,6 +299,42 @@ fn install_rejects_invalid_hive_http_proxy_for_http_downloads() {
 }
 
 #[test]
+fn install_rejects_invalid_hive_insecure_ssl_value_for_https_downloads() {
+    let _env = tests_support::lock_env();
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let archive_name = "rg.tar.gz";
+    let archive_path = tests_support::write_named_tar_gz(temp.path(), archive_name, "rg");
+    let archive_bytes = fs::read(&archive_path).unwrap();
+    let checksum = format!("sha256:{:x}", Sha256::digest(&archive_bytes));
+
+    tests_support::write_manifest_with_binaries_with_archive(
+        &paths,
+        "rg",
+        "14.1.0",
+        &archive_path,
+        &checksum,
+        &["rg"],
+        "tar.gz",
+    );
+
+    unsafe {
+        std::env::set_var("HIVE_INSECURE_SSL", "maybe");
+    }
+    let error = app::run_capture(
+        Cli::try_parse_from(["hive", "install", "rg"]).unwrap(),
+        paths,
+    )
+    .unwrap_err();
+    unsafe {
+        std::env::remove_var("HIVE_INSECURE_SSL");
+    }
+
+    assert!(error.contains("HIVE_INSECURE_SSL"));
+    assert!(error.contains("invalid boolean value"));
+}
+
+#[test]
 fn install_command_rejects_symlinked_declared_binaries() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
