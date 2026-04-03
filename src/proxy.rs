@@ -14,6 +14,7 @@ struct ProxySettings {
 
 pub fn build_http_client() -> Result<reqwest::blocking::Client, String> {
     let settings = resolve_proxy_settings_from(|name| std::env::var(name).ok());
+    let https_proxy = effective_https_proxy(&settings);
     let no_proxy = settings
         .no_proxy
         .as_ref()
@@ -28,7 +29,7 @@ pub fn build_http_client() -> Result<reqwest::blocking::Client, String> {
         );
     }
 
-    if let Some(proxy) = settings.https_proxy {
+    if let Some(proxy) = https_proxy {
         builder = builder.proxy(
             reqwest::Proxy::https(&proxy.value)
                 .map_err(|_| format!("invalid proxy URL in {}", proxy.env_name))?
@@ -61,6 +62,13 @@ where
     }
 }
 
+fn effective_https_proxy(settings: &ProxySettings) -> Option<ResolvedValue> {
+    settings
+        .https_proxy
+        .clone()
+        .or_else(|| settings.http_proxy.clone())
+}
+
 fn resolve_value<F>(
     get: &mut F,
     hive_name: &'static str,
@@ -84,7 +92,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{ProxySettings, ResolvedValue, resolve_proxy_settings_from};
+    use super::{ProxySettings, ResolvedValue, effective_https_proxy, resolve_proxy_settings_from};
     use std::collections::HashMap;
 
     #[test]
@@ -158,6 +166,46 @@ mod tests {
                     value: "localhost,127.0.0.1".to_string(),
                 }),
             }
+        );
+    }
+
+    #[test]
+    fn https_proxy_falls_back_to_http_proxy_when_https_unset() {
+        let env = HashMap::from([("HTTP_PROXY", "http://upper-http:8080")]);
+
+        let settings =
+            resolve_proxy_settings_from(|name| env.get(name).map(|value| value.to_string()));
+
+        assert_eq!(
+            effective_https_proxy(&settings),
+            Some(ResolvedValue {
+                env_name: "HTTP_PROXY",
+                value: "http://upper-http:8080".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn https_proxy_prefers_https_specific_value() {
+        let settings = ProxySettings {
+            http_proxy: Some(ResolvedValue {
+                env_name: "HTTP_PROXY",
+                value: "http://http-proxy:8080".to_string(),
+            }),
+            https_proxy: Some(ResolvedValue {
+                env_name: "HTTPS_PROXY",
+                value: "http://https-proxy:8080".to_string(),
+            }),
+            all_proxy: None,
+            no_proxy: None,
+        };
+
+        assert_eq!(
+            effective_https_proxy(&settings),
+            Some(ResolvedValue {
+                env_name: "HTTPS_PROXY",
+                value: "http://https-proxy:8080".to_string(),
+            })
         );
     }
 }
