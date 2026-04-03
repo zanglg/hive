@@ -76,12 +76,18 @@ where
         return Ok(false);
     };
 
-    if value.is_empty() {
-        return Ok(false);
+    let trimmed = value.trim();
+
+    if trimmed.is_empty() {
+        if value.is_empty() {
+            return Ok(false);
+        }
+
+        return Err("invalid boolean value in HIVE_INSECURE_SSL".to_string());
     }
 
     if matches!(
-        value.to_ascii_lowercase().as_str(),
+        trimmed.to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
     ) {
         Ok(true)
@@ -138,7 +144,7 @@ mod tests {
 
     #[test]
     fn insecure_ssl_accepts_truthy_values_case_insensitively() {
-        for value in ["1", "true", "TRUE", "Yes", "on", "ON"] {
+        for value in ["1", " true ", "TRUE", "Yes", "on", "ON"] {
             let env: HashMap<&str, &str> = HashMap::from([("HIVE_INSECURE_SSL", value)]);
             let settings = resolve_transport_settings_from(|name| {
                 env.get(name).map(|value| value.to_string())
