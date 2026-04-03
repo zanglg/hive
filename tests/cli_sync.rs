@@ -103,18 +103,12 @@ fn sync_rejects_invalid_hive_insecure_ssl_value_for_github_requests() {
     let _env = tests_support::lock_env();
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
-    let server = tests_support::spawn_github_server(vec![tests_support::release_json(
-        "v14.1.0",
-        false,
-        false,
-        vec![],
-    )]);
 
     unsafe {
         std::env::set_var("HIVE_INSECURE_SSL", "maybe");
     }
-    let error =
-        sync::sync_repo_with_api_base(&paths, "BurntSushi/ripgrep", server.api_base()).unwrap_err();
+    let error = sync::sync_repo_with_api_base(&paths, "BurntSushi/ripgrep", "http://127.0.0.1:9")
+        .unwrap_err();
     unsafe {
         std::env::remove_var("HIVE_INSECURE_SSL");
     }

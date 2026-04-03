@@ -307,7 +307,6 @@ fn install_rejects_invalid_hive_insecure_ssl_value_for_https_downloads() {
     let archive_path = tests_support::write_named_tar_gz(temp.path(), archive_name, "rg");
     let archive_bytes = fs::read(&archive_path).unwrap();
     let checksum = format!("sha256:{:x}", Sha256::digest(&archive_bytes));
-    let server = tests_support::spawn_http_server(archive_bytes, "application/gzip");
 
     tests_support::write_manifest_with_binaries_with_archive(
         &paths,
@@ -318,11 +317,6 @@ fn install_rejects_invalid_hive_insecure_ssl_value_for_https_downloads() {
         &["rg"],
         "tar.gz",
     );
-    let manifest_path = paths.manifest_dirs[0].join("rg.toml");
-    let manifest = fs::read_to_string(&manifest_path)
-        .unwrap()
-        .replace(&format!("file://{}", archive_path.display()), server.url());
-    fs::write(&manifest_path, manifest).unwrap();
 
     unsafe {
         std::env::set_var("HIVE_INSECURE_SSL", "maybe");
