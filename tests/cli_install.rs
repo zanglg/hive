@@ -12,8 +12,11 @@ use hive::{
 };
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tempfile::tempdir;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 #[test]
 fn parses_install_command_with_package_name() {
@@ -113,6 +116,46 @@ fn renders_manifest_with_github_source_block_before_platforms() {
     let platform_index = rendered.find(&platform_block).unwrap();
 
     assert!(source_index < platform_index);
+}
+
+#[cfg(unix)]
+#[test]
+fn list_executable_candidates_returns_relative_paths_in_stable_order() {
+    let temp = tempdir().unwrap();
+    let install_root = temp.path().join("install");
+    let alpha = install_root.join("bin/alpha");
+    let beta = install_root.join("tools/beta");
+    write_file_with_mode(&alpha, b"alpha", 0o755);
+    write_file_with_mode(&beta, b"beta", 0o755);
+
+    let candidates = hive::installer::list_executable_candidates(&install_root).unwrap();
+
+    assert_eq!(candidates, vec!["bin/alpha", "tools/beta"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn list_executable_candidates_ignores_non_executable_files() {
+    let temp = tempdir().unwrap();
+    let install_root = temp.path().join("install");
+    let readme = install_root.join("README");
+    write_file_with_mode(&readme, b"docs", 0o644);
+
+    let candidates = hive::installer::list_executable_candidates(&install_root).unwrap();
+
+    assert!(candidates.is_empty());
+}
+
+fn write_file_with_mode(path: &Path, contents: &[u8], mode: u32) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, contents).unwrap();
+
+    #[cfg(unix)]
+    {
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(mode);
+        fs::set_permissions(path, permissions).unwrap();
+    }
 }
 
 #[test]
