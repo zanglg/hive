@@ -104,6 +104,49 @@ binaries = ["rg"]
 }
 
 #[test]
+fn manifest_can_replace_current_platform_binaries_without_touching_other_platforms() {
+    let current = tests_support::current_platform_key();
+    let other = tests_support::alternate_platform_key();
+    let contents = format!(
+        r#"
+name = "rg"
+version = "14.1.0"
+
+[platform.{current}]
+url = "https://example.invalid/current.tar.gz"
+checksum = "sha256:abc"
+archive = "tar.gz"
+binaries = ["old-bin"]
+
+[platform.{other}]
+url = "https://example.invalid/other.tar.gz"
+checksum = "sha256:def"
+archive = "tar.gz"
+binaries = ["other-bin"]
+"#
+    );
+
+    let mut manifest = Manifest::from_toml(&contents).unwrap();
+    manifest
+        .set_binaries_for_platform(
+            current,
+            vec!["bin/rg".to_string(), "bin/rga".to_string()],
+        )
+        .unwrap();
+
+    let manifest = Manifest::from_toml(&manifest.to_toml().unwrap()).unwrap();
+
+    assert_eq!(
+        manifest.platform.get(current).unwrap().binaries,
+        vec!["bin/rg", "bin/rga"]
+    );
+    assert_eq!(
+        manifest.platform.get(other).unwrap().binaries,
+        vec!["other-bin"]
+    );
+}
+
+#[test]
 fn renders_manifest_with_github_source_block_before_platforms() {
     let manifest =
         tests_support::manifest_with_github_source("rg", "14.1.0", "BurntSushi/ripgrep", "stable");

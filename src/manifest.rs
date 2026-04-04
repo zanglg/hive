@@ -57,6 +57,21 @@ impl Manifest {
             .get(&platform.to_string())
             .ok_or_else(|| format!("manifest does not support platform {platform}"))
     }
+
+    pub fn set_binaries_for_platform(
+        &mut self,
+        platform: &str,
+        binaries: Vec<String>,
+    ) -> Result<(), String> {
+        let artifact = self
+            .platform
+            .get_mut(platform)
+            .ok_or_else(|| format!("manifest does not support platform {platform}"))?;
+
+        artifact.binaries = binaries;
+
+        Ok(())
+    }
 }
 
 pub struct ManifestRepository {
