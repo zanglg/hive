@@ -28,7 +28,7 @@ pub enum Commands {
     List,
     #[command(
         about = "Create or update a manifest from a GitHub release",
-        long_about = "Create or update a manifest from the latest qualifying GitHub release.\n\nHive fetches release metadata, maps supported platform assets, computes checksums, and writes the manifest into the local manifest directory.\n\nExamples:\n  hive sync BurntSushi/ripgrep"
+        long_about = "Create or update a manifest from the latest qualifying GitHub release.\n\nHive fetches release metadata, prompts for the current platform's asset and binaries, computes checksums, and writes the manifest into the local manifest directory.\n\nExamples:\n  hive sync BurntSushi/ripgrep"
     )]
     Sync {
         #[arg(value_name = "REPO", help = "GitHub repository in owner/name form")]

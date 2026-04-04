@@ -9,9 +9,11 @@ use crate::{
     state::{InstalledPackage, StateStore},
     sync,
 };
+use std::cell::RefCell;
 use std::{
     collections::HashSet,
-    fs,
+    env, fs,
+    io::{self, BufRead, Write},
     path::{Path, PathBuf},
 };
 
@@ -38,7 +40,7 @@ pub fn run_with_paths(cli: Cli, paths: HivePaths) -> Result<(), String> {
             }
             Ok(())
         }
-        Commands::Sync { repo } => sync_repo(&paths, &repo),
+        Commands::Sync { repo } => sync_repo_interactive(&paths, &repo),
         Commands::Use { package, version } => use_package(&paths, &package, &version),
         Commands::Uninstall {
             package,
@@ -61,7 +63,7 @@ pub fn run_capture(cli: Cli, paths: HivePaths) -> Result<String, String> {
         }
         Commands::List => list_packages(&paths),
         Commands::Sync { repo } => {
-            sync_repo(&paths, &repo)?;
+            sync_repo_noninteractive(&paths, &repo)?;
             Ok(String::new())
         }
         Commands::Use { package, version } => {
@@ -80,8 +82,123 @@ pub fn run_capture(cli: Cli, paths: HivePaths) -> Result<String, String> {
     }
 }
 
-fn sync_repo(_paths: &HivePaths, _repo: &str) -> Result<(), String> {
-    sync::sync_repo(_paths, _repo)
+struct TerminalSyncPrompts<R, W> {
+    input: RefCell<R>,
+    output: RefCell<W>,
+}
+
+impl<R, W> TerminalSyncPrompts<R, W> {
+    fn new(input: R, output: W) -> Self {
+        Self {
+            input: RefCell::new(input),
+            output: RefCell::new(output),
+        }
+    }
+}
+
+impl<R: BufRead, W: Write> TerminalSyncPrompts<R, W> {
+    fn read_line(&self, prompt_name: &str) -> Result<String, String> {
+        let mut line = String::new();
+        self.input
+            .borrow_mut()
+            .read_line(&mut line)
+            .map_err(|error| format!("failed to read {prompt_name}: {error}"))?;
+        Ok(line.trim().to_string())
+    }
+}
+
+impl<R: BufRead, W: Write> sync::SyncPrompts for TerminalSyncPrompts<R, W> {
+    fn select_asset(
+        &self,
+        repo: &str,
+        release_tag: &str,
+        assets: &[String],
+    ) -> Result<sync::PromptInput<String>, String> {
+        {
+            let mut output = self.output.borrow_mut();
+            writeln!(
+                output,
+                "Select asset for current platform from {repo} release {release_tag}:"
+            )
+            .map_err(|error| format!("failed to write prompt: {error}"))?;
+            for (index, asset) in assets.iter().enumerate() {
+                writeln!(output, "{}. {}", index + 1, asset)
+                    .map_err(|error| format!("failed to write prompt: {error}"))?;
+            }
+            write!(output, "Selection: ")
+                .map_err(|error| format!("failed to write prompt: {error}"))?;
+            output
+                .flush()
+                .map_err(|error| format!("failed to flush prompt: {error}"))?;
+        }
+        let selection = self.read_line("asset selection")?;
+        if selection.is_empty() {
+            return Ok(sync::PromptInput::Default);
+        }
+        Ok(sync::PromptInput::Value(selection))
+    }
+
+    fn input_binaries(
+        &self,
+        package: &str,
+        asset_name: &str,
+        suggested_binaries: &[String],
+    ) -> Result<sync::PromptInput<Vec<String>>, String> {
+        {
+            let mut output = self.output.borrow_mut();
+            writeln!(
+                output,
+                "Enter binaries for package `{package}` from `{asset_name}` (comma-separated)."
+            )
+            .map_err(|error| format!("failed to write prompt: {error}"))?;
+            writeln!(output, "Suggested: {}", suggested_binaries.join(", "))
+                .map_err(|error| format!("failed to write prompt: {error}"))?;
+            write!(output, "Binaries: ")
+                .map_err(|error| format!("failed to write prompt: {error}"))?;
+            output
+                .flush()
+                .map_err(|error| format!("failed to flush prompt: {error}"))?;
+        }
+        let input = self.read_line("binary list")?;
+        if input.is_empty() {
+            return Ok(sync::PromptInput::Default);
+        }
+        let binaries = input
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        if binaries.is_empty() {
+            return Err("binary list cannot be empty".to_string());
+        }
+        Ok(sync::PromptInput::Value(binaries))
+    }
+}
+
+fn sync_repo_interactive(paths: &HivePaths, repo: &str) -> Result<(), String> {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let prompts = TerminalSyncPrompts::new(stdin.lock(), stdout.lock());
+    match github_api_base_override() {
+        Some(api_base) => {
+            sync::sync_repo_with_api_base_and_prompt(paths, repo, &api_base, &prompts)
+        }
+        None => sync::sync_repo_with_prompt(paths, repo, &prompts),
+    }
+}
+
+fn sync_repo_noninteractive(paths: &HivePaths, repo: &str) -> Result<(), String> {
+    match github_api_base_override() {
+        Some(api_base) => sync::sync_repo_with_api_base(paths, repo, &api_base),
+        None => sync::sync_repo(paths, repo),
+    }
+}
+
+fn github_api_base_override() -> Option<String> {
+    env::var("HIVE_GITHUB_API_BASE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn default_paths() -> Result<HivePaths, String> {

@@ -25,6 +25,14 @@ pub struct ManifestSource {
 pub struct GitHubSource {
     pub repo: String,
     pub channel: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub platform: BTreeMap<String, GitHubPlatformSelection>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct GitHubPlatformSelection {
+    pub asset: String,
+    pub binaries: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

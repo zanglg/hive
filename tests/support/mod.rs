@@ -1,10 +1,11 @@
 #![allow(dead_code)]
 
-use flate2::{Compression, write::GzEncoder};
+use flate2::{write::GzEncoder, Compression};
 use hive::{
     config::HivePaths,
     manifest::{Artifact, GitHubSource, Manifest, ManifestSource},
     state::{InstalledPackage, StateStore},
+    sync::{PromptInput, SyncPrompts},
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -19,6 +20,64 @@ use std::{
 };
 use tar::Builder;
 use xz2::write::XzEncoder;
+
+pub struct ScriptedSyncPrompts {
+    answers: Mutex<Vec<String>>,
+}
+
+impl ScriptedSyncPrompts {
+    pub fn new(answers: &[&str]) -> Self {
+        Self {
+            answers: Mutex::new(answers.iter().map(|answer| (*answer).to_string()).collect()),
+        }
+    }
+
+    fn next_answer(&self, prompt: &str) -> Result<String, String> {
+        let mut answers = self.answers.lock().unwrap();
+        if answers.is_empty() {
+            return Err(format!("no scripted answer left for prompt `{prompt}`"));
+        }
+        Ok(answers.remove(0))
+    }
+}
+
+impl SyncPrompts for ScriptedSyncPrompts {
+    fn select_asset(
+        &self,
+        _repo: &str,
+        _release_tag: &str,
+        _assets: &[String],
+    ) -> Result<PromptInput<String>, String> {
+        let answer = self.next_answer("select_asset")?;
+        let trimmed = answer.trim();
+        if trimmed.is_empty() {
+            return Ok(PromptInput::Default);
+        }
+        Ok(PromptInput::Value(trimmed.to_string()))
+    }
+
+    fn input_binaries(
+        &self,
+        _package: &str,
+        _asset_name: &str,
+        _suggested_binaries: &[String],
+    ) -> Result<PromptInput<Vec<String>>, String> {
+        let answer = self.next_answer("input_binaries")?;
+        if answer.trim().is_empty() {
+            return Ok(PromptInput::Default);
+        }
+        let binaries = answer
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        if binaries.is_empty() {
+            return Err("binary list cannot be empty".to_string());
+        }
+        Ok(PromptInput::Value(binaries))
+    }
+}
 
 pub fn write_tar_gz(archive_path: &Path, source_dir: &Path, file_name: &str) {
     let tar_gz = fs::File::create(archive_path).unwrap();
@@ -354,6 +413,16 @@ pub fn current_platform_key() -> &'static str {
     }
 }
 
+pub fn alternate_platform_key() -> &'static str {
+    match current_platform_key() {
+        "linux-x86_64" => "macos-aarch64",
+        "linux-aarch64" => "macos-x86_64",
+        "macos-x86_64" => "linux-aarch64",
+        "macos-aarch64" => "linux-x86_64",
+        _ => panic!("unsupported test host"),
+    }
+}
+
 pub fn platform_archive_name(package: &str, version: &str) -> String {
     match current_platform_key() {
         "linux-x86_64" => format!("{package}-{version}-x86_64-unknown-linux-musl.tar.gz"),
@@ -377,6 +446,7 @@ pub fn manifest_with_github_source(
             github: Some(GitHubSource {
                 repo: repo.to_string(),
                 channel: channel.to_string(),
+                platform: BTreeMap::new(),
             }),
         }),
         platform: BTreeMap::from([(
@@ -603,6 +673,7 @@ pub fn write_manifest_with_github_source_platforms(
             github: Some(GitHubSource {
                 repo: repo.to_string(),
                 channel: channel.to_string(),
+                platform: BTreeMap::new(),
             }),
         }),
         platform: platforms
