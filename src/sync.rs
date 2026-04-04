@@ -30,6 +30,14 @@ pub fn sync_repo(paths: &HivePaths, repo: &str) -> Result<(), String> {
     sync_repo_with_api_base(paths, repo, DEFAULT_GITHUB_API_BASE)
 }
 
+pub fn sync_repo_with_prompt(
+    paths: &HivePaths,
+    repo: &str,
+    prompts: &dyn SyncPrompts,
+) -> Result<(), String> {
+    sync_repo_with_api_base_and_prompt(paths, repo, DEFAULT_GITHUB_API_BASE, prompts)
+}
+
 pub fn sync_repo_with_api_base(
     paths: &HivePaths,
     repo: &str,
@@ -93,15 +101,14 @@ fn sync_repo_with_api_base_impl(
         &current_platform,
         prompts,
     )?;
-    let manifest =
-        build_manifest_from_release(
-            package,
-            &source,
-            existing.as_ref(),
-            &release,
-            &client,
-            &current_platform,
-        )?;
+    let manifest = build_manifest_from_release(
+        package,
+        &source,
+        existing.as_ref(),
+        &release,
+        &client,
+        &current_platform,
+    )?;
 
     if existing.as_ref() == Some(&manifest) {
         return Ok(());
@@ -138,8 +145,12 @@ fn build_manifest_from_release(
                 selection.asset, release.tag_name
             )
         })?;
-    let archive = archive_kind_from_name(&asset.name)
-        .ok_or_else(|| format!("selected asset `{}` has unsupported archive format", asset.name))?;
+    let archive = archive_kind_from_name(&asset.name).ok_or_else(|| {
+        format!(
+            "selected asset `{}` has unsupported archive format",
+            asset.name
+        )
+    })?;
     let bytes = read_artifact_bytes(client, &asset.browser_download_url)?;
     let checksum = format!("sha256:{:x}", Sha256::digest(&bytes));
     let mut platform = existing
@@ -174,6 +185,8 @@ fn resolve_current_platform_selection(
     prompts: Option<&dyn SyncPrompts>,
 ) -> Result<GitHubSource, String> {
     let saved_selection = source.platform.get(current_platform).cloned();
+    let inferred_asset =
+        infer_asset_name_from_existing_artifact(existing, current_platform, release);
     let suggested_binaries = saved_selection
         .as_ref()
         .map(|selection| selection.binaries.clone())
@@ -198,10 +211,12 @@ fn resolve_current_platform_selection(
         None => saved_selection
             .as_ref()
             .map(|selection| selection.asset.clone())
+            .or(inferred_asset)
             .ok_or_else(|| {
                 format!("missing GitHub asset selection for current platform `{current_platform}`")
             })?,
     };
+    ensure_supported_asset_name(&selected_asset)?;
     let binaries = match prompts {
         Some(prompts) => prompts.input_binaries(package, &selected_asset, &suggested_binaries)?,
         None => suggested_binaries,
@@ -249,6 +264,33 @@ fn parse_repo(repo: &str) -> Result<(&str, &str), String> {
 
 fn normalize_version(tag_name: &str) -> String {
     tag_name.strip_prefix('v').unwrap_or(tag_name).to_string()
+}
+
+fn infer_asset_name_from_existing_artifact(
+    existing: Option<&Manifest>,
+    current_platform: &str,
+    release: &Release,
+) -> Option<String> {
+    let asset_name = existing
+        .and_then(|manifest| manifest.platform.get(current_platform))
+        .and_then(|artifact| asset_name_from_url(&artifact.url))?;
+
+    release
+        .assets
+        .iter()
+        .find(|asset| asset.name == asset_name)
+        .map(|asset| asset.name.clone())
+}
+
+fn asset_name_from_url(url: &str) -> Option<&str> {
+    let url = url.split(['?', '#']).next()?;
+    url.rsplit('/').next().filter(|value| !value.is_empty())
+}
+
+fn ensure_supported_asset_name(name: &str) -> Result<(), String> {
+    archive_kind_from_name(name)
+        .map(|_| ())
+        .ok_or_else(|| format!("selected asset `{name}` has unsupported archive format"))
 }
 
 fn archive_kind_from_name(name: &str) -> Option<&'static str> {
