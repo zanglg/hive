@@ -1265,8 +1265,12 @@ fn sync_is_noop_when_release_and_artifacts_are_unchanged() {
 #[test]
 fn readme_sync_example_matches_interactive_flow() {
     let readme = fs::read_to_string("README.md").unwrap();
-    assert!(readme.contains("hive sync BurntSushi/ripgrep"));
-    assert!(readme.contains("interactive"));
-    assert!(readme.contains("[source.github.platform."));
-    assert!(readme.contains("asset = "));
+    assert!(readme.contains("`hive sync` is interactive:"));
+    assert!(readme.contains(
+        "It fetches release metadata, then prompts only for the current platform's asset and binaries."
+    ));
+    assert!(readme.contains("Hive saves the chosen asset filename and binary paths in the manifest, and later syncs reuse those saved values as defaults."));
+    assert!(readme.contains("name = \"ripgrep\""));
+    assert!(readme.contains("[source.github.platform.macos-aarch64]"));
+    assert!(readme.contains("asset = \"ripgrep-14.1.0-aarch64-apple-darwin.tar.gz\""));
 }

@@ -96,7 +96,7 @@ It fetches release metadata, then prompts only for the current platform's asset 
 Synced manifests store their source configuration in the manifest itself, along with the generated artifact entry for the current platform:
 
 ```toml
-name = "rg"
+name = "ripgrep"
 version = "14.1.0"
 
 [source.github]
