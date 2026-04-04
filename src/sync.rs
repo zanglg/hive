@@ -97,13 +97,15 @@ fn sync_repo_with_api_base_impl(
 
     let client = GitHubClient::new(api_base, proxy::build_http_client()?);
     let release = client.latest_release(repo, &source.channel)?;
-    let current_platform = Platform::current()?.to_string();
+    let current_platform = Platform::current()?;
+    let current_platform_key = current_platform.to_string();
     let source = resolve_current_platform_selection(
         package,
         &source,
         existing.as_ref(),
         &release,
-        &current_platform,
+        current_platform,
+        &current_platform_key,
         prompts,
     )?;
     let manifest = build_manifest_from_release(
@@ -112,7 +114,7 @@ fn sync_repo_with_api_base_impl(
         existing.as_ref(),
         &release,
         &client,
-        &current_platform,
+        &current_platform_key,
     )?;
 
     if existing.as_ref() == Some(&manifest) {
@@ -186,20 +188,23 @@ fn resolve_current_platform_selection(
     source: &GitHubSource,
     existing: Option<&Manifest>,
     release: &Release,
-    current_platform: &str,
+    current_platform: Platform,
+    current_platform_key: &str,
     prompts: Option<&dyn SyncPrompts>,
 ) -> Result<GitHubSource, String> {
-    let saved_selection = source.platform.get(current_platform).cloned();
+    let saved_selection = source.platform.get(current_platform_key).cloned();
     let default_asset = saved_selection
         .as_ref()
         .map(|selection| selection.asset.clone())
-        .or_else(|| infer_asset_name_from_existing_artifact(existing, current_platform, release));
+        .or_else(|| {
+            infer_asset_name_from_existing_artifact(existing, current_platform_key, release)
+        });
     let default_binaries = saved_selection
         .as_ref()
         .map(|selection| selection.binaries.clone())
         .or_else(|| {
             existing
-                .and_then(|manifest| manifest.platform.get(current_platform))
+                .and_then(|manifest| manifest.platform.get(current_platform_key))
                 .map(|artifact| artifact.binaries.clone())
         });
     let suggested_binaries = default_binaries
@@ -207,26 +212,23 @@ fn resolve_current_platform_selection(
         .unwrap_or_else(|| vec![package.to_string()]);
     let selected_asset = match prompts {
         Some(prompts) => {
-            let asset_names = release
-                .assets
-                .iter()
-                .map(|asset| asset.name.clone())
-                .collect::<Vec<_>>();
+            let asset_names =
+                current_platform_prompt_assets(release, current_platform, current_platform_key)?;
             resolve_prompted_asset_name(
-                current_platform,
+                current_platform_key,
                 &asset_names,
                 prompts.select_asset(&source.repo, &release.tag_name, &asset_names)?,
                 default_asset.clone(),
             )?
         }
         None => default_asset.ok_or_else(|| {
-            format!("missing GitHub asset selection for current platform `{current_platform}`")
+            format!("missing GitHub asset selection for current platform `{current_platform_key}`")
         })?,
     };
     ensure_supported_asset_name(&selected_asset)?;
     let binaries = match prompts {
         Some(prompts) => resolve_prompted_binaries(
-            current_platform,
+            current_platform_key,
             prompts.input_binaries(package, &selected_asset, &suggested_binaries)?,
             default_binaries,
         )?,
@@ -234,7 +236,7 @@ fn resolve_current_platform_selection(
     };
     let mut prompted = source.clone();
     prompted.platform.insert(
-        current_platform.to_string(),
+        current_platform_key.to_string(),
         GitHubPlatformSelection {
             asset: selected_asset,
             binaries,
@@ -276,7 +278,8 @@ fn resolve_prompted_binaries(
 
 fn resolve_selected_asset_name(assets: &[String], selection: &str) -> Result<String, String> {
     if let Ok(index) = selection.parse::<usize>() {
-        if let Some(asset) = assets.get(index.saturating_sub(1)) {
+        if (1..=assets.len()).contains(&index) {
+            let asset = &assets[index - 1];
             return Ok(asset.clone());
         }
     }
@@ -357,6 +360,49 @@ fn ensure_supported_asset_name(name: &str) -> Result<(), String> {
     archive_kind_from_name(name)
         .map(|_| ())
         .ok_or_else(|| format!("selected asset `{name}` has unsupported archive format"))
+}
+
+fn current_platform_prompt_assets(
+    release: &Release,
+    current_platform: Platform,
+    current_platform_key: &str,
+) -> Result<Vec<String>, String> {
+    let assets = release
+        .assets
+        .iter()
+        .filter(|asset| is_current_platform_prompt_asset(&asset.name, current_platform))
+        .map(|asset| asset.name.clone())
+        .collect::<Vec<_>>();
+    if assets.is_empty() {
+        return Err(format!(
+            "no release assets matched current platform `{current_platform_key}` in release `{}`",
+            release.tag_name
+        ));
+    }
+    Ok(assets)
+}
+
+fn is_current_platform_prompt_asset(name: &str, current_platform: Platform) -> bool {
+    if archive_kind_from_name(name).is_none() {
+        return false;
+    }
+
+    let name = name.to_ascii_lowercase();
+    let (os_tokens, arch_tokens) = match current_platform {
+        Platform::LinuxX86_64 => (&["linux"][..], &["x86_64", "amd64", "x64"][..]),
+        Platform::LinuxAarch64 => (&["linux"][..], &["aarch64", "arm64"][..]),
+        Platform::MacosX86_64 => (
+            &["macos", "darwin", "apple", "osx"][..],
+            &["x86_64", "amd64", "x64"][..],
+        ),
+        Platform::MacosAarch64 => (
+            &["macos", "darwin", "apple", "osx"][..],
+            &["aarch64", "arm64"][..],
+        ),
+    };
+
+    os_tokens.iter().any(|token| name.contains(token))
+        && arch_tokens.iter().any(|token| name.contains(token))
 }
 
 fn archive_kind_from_name(name: &str) -> Option<&'static str> {

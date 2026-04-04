@@ -189,14 +189,14 @@ fn sync_rejects_invalid_hive_insecure_ssl_value_for_github_requests() {
 fn first_sync_creates_manifest_with_stable_channel_and_checksum() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
-    let archive_name = "ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz";
-    let archive_path = tests_support::write_named_tar_gz(temp.path(), archive_name, "rg");
+    let archive_name = tests_support::platform_archive_name("ripgrep", "14.1.0");
+    let archive_path = tests_support::write_named_tar_gz(temp.path(), &archive_name, "rg");
     let server = tests_support::spawn_github_server(vec![tests_support::release_json(
         "v14.1.0",
         false,
         false,
         vec![tests_support::asset_json(
-            archive_name,
+            &archive_name,
             &tests_support::file_url(&archive_path),
         )],
     )]);
@@ -237,7 +237,7 @@ fn first_sync_uses_prompted_asset_for_current_platform() {
     };
     let other_archive_path =
         tests_support::write_named_tar_gz(temp.path(), other_archive_name, "nvim");
-    let prompts = tests_support::ScriptedSyncPrompts::new(&["2", "bin/nvim"]);
+    let prompts = tests_support::ScriptedSyncPrompts::new(&["1", "bin/nvim"]);
     let server = tests_support::spawn_github_server(vec![tests_support::release_json(
         "v0.10.0",
         false,
@@ -267,6 +267,43 @@ fn first_sync_uses_prompted_asset_for_current_platform() {
     )));
     assert!(manifest.contains(&format!("asset = \"{current_archive_name}\"")));
     assert!(manifest.contains("binaries = [\"bin/nvim\"]"));
+}
+
+#[test]
+fn sync_rejects_foreign_platform_only_assets_for_interactive_current_platform_selection() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let foreign_archive_name = match tests_support::current_platform_key() {
+        "linux-x86_64" => "nvim-macos-arm64.tar.gz",
+        "linux-aarch64" => "nvim-macos-x64.tar.gz",
+        "macos-x86_64" => "nvim-linux-arm64.tar.gz",
+        "macos-aarch64" => "nvim-linux-x64.tar.gz",
+        _ => panic!("unsupported test host"),
+    };
+    let foreign_archive_path =
+        tests_support::write_named_tar_gz(temp.path(), foreign_archive_name, "nvim");
+    let prompts = tests_support::ScriptedSyncPrompts::new(&[]);
+    let server = tests_support::spawn_github_server(vec![tests_support::release_json(
+        "v0.10.0",
+        false,
+        false,
+        vec![tests_support::asset_json(
+            foreign_archive_name,
+            &tests_support::file_url(&foreign_archive_path),
+        )],
+    )]);
+
+    let error = sync::sync_repo_with_api_base_and_prompt(
+        &paths,
+        "neovim/neovim",
+        server.api_base(),
+        &prompts,
+    )
+    .unwrap_err();
+
+    assert!(error.contains("no release assets matched current platform"));
+    assert!(error.contains(tests_support::current_platform_key()));
+    assert!(!paths.manifest_dirs[0].join("neovim.toml").exists());
 }
 
 #[test]
@@ -318,7 +355,7 @@ fn cli_sync_routes_through_terminal_prompts_for_current_platform() {
         .stdin
         .as_mut()
         .unwrap()
-        .write_all(b"2\nbin/nvim\n")
+        .write_all(b"1\nbin/nvim\n")
         .unwrap();
     drop(child.stdin.take());
 
@@ -434,9 +471,9 @@ fn sync_preserves_other_platform_artifacts_when_updating_current_platform() {
         "macos-aarch64" => ("linux-x86_64", "nvim-linux-x86_64.tar.gz"),
         _ => panic!("unsupported test host"),
     };
-    let current_archive_name = "nvim-portable.tar.gz";
+    let current_archive_name = tests_support::platform_archive_name("nvim", "0.10.0");
     let current_archive_path =
-        tests_support::write_named_tar_gz(temp.path(), current_archive_name, "nvim");
+        tests_support::write_named_tar_gz(temp.path(), &current_archive_name, "nvim");
     let current_archive_url = tests_support::file_url(&current_archive_path);
     let current_checksum = format!(
         "sha256:{:x}",
@@ -477,14 +514,13 @@ binaries = ["bin/nvim-other"]
         ),
     )
     .unwrap();
-    let prompts =
-        tests_support::ScriptedSyncPrompts::new(&[current_archive_name, "bin/nvim,bin/nvimdiff"]);
+    let prompts = tests_support::ScriptedSyncPrompts::new(&["1", "bin/nvim,bin/nvimdiff"]);
     let server = tests_support::spawn_github_server(vec![tests_support::release_json(
         "v0.10.0",
         false,
         false,
         vec![tests_support::asset_json(
-            current_archive_name,
+            &current_archive_name,
             &current_archive_url,
         )],
     )]);
@@ -629,7 +665,7 @@ fn sync_rejects_prompted_asset_with_unsupported_archive_format() {
     )
     .unwrap_err();
 
-    assert!(error.contains("unsupported archive format"));
+    assert!(error.contains("no release assets matched current platform"));
     assert!(!paths.manifest_dirs[0].join("ripgrep.toml").exists());
 }
 
@@ -773,6 +809,63 @@ fn sync_leaves_existing_manifest_unchanged_when_prompted_asset_is_invalid() {
 }
 
 #[test]
+fn sync_leaves_existing_manifest_unchanged_when_prompted_asset_selection_is_zero() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let current_platform = tests_support::current_platform_key().to_string();
+    let archive_name = tests_support::platform_archive_name("ripgrep", "14.1.0");
+    let archive_path = tests_support::write_named_tar_gz(temp.path(), &archive_name, "rg");
+    let archive_url = tests_support::file_url(&archive_path);
+    let mut manifest = tests_support::manifest_with_github_source(
+        "ripgrep",
+        "14.0.0",
+        "BurntSushi/ripgrep",
+        "stable",
+    );
+    manifest
+        .source
+        .as_mut()
+        .unwrap()
+        .github
+        .as_mut()
+        .unwrap()
+        .platform
+        .insert(
+            current_platform,
+            GitHubPlatformSelection {
+                asset: archive_name.clone(),
+                binaries: vec!["bin/rg".to_string()],
+            },
+        );
+    fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
+    fs::write(
+        paths.manifest_dirs[0].join("ripgrep.toml"),
+        manifest.to_toml().unwrap(),
+    )
+    .unwrap();
+    let before = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
+    let prompts = tests_support::ScriptedSyncPrompts::new(&["0"]);
+    let server = tests_support::spawn_github_server(vec![tests_support::release_json(
+        "v14.1.0",
+        false,
+        false,
+        vec![tests_support::asset_json(&archive_name, &archive_url)],
+    )]);
+
+    let error = sync::sync_repo_with_api_base_and_prompt(
+        &paths,
+        "BurntSushi/ripgrep",
+        server.api_base(),
+        &prompts,
+    )
+    .unwrap_err();
+
+    assert!(error.contains("selected asset `0` was not found"));
+    let after = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
+    assert_eq!(after, before);
+}
+
+#[test]
 fn sync_rejects_empty_asset_prompt_when_no_saved_default_exists() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
@@ -870,7 +963,7 @@ fn sync_leaves_existing_manifest_unchanged_when_prompted_asset_suffix_is_unsuppo
     )
     .unwrap_err();
 
-    assert!(error.contains("unsupported archive format"));
+    assert!(error.contains("no release assets matched current platform"));
     let after = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
     assert_eq!(after, before);
 }
