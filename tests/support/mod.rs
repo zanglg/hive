@@ -1,10 +1,11 @@
 #![allow(dead_code)]
 
-use flate2::{Compression, write::GzEncoder};
+use flate2::{write::GzEncoder, Compression};
 use hive::{
     config::HivePaths,
     manifest::{Artifact, GitHubSource, Manifest, ManifestSource},
     state::{InstalledPackage, StateStore},
+    sync::SyncPrompts,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -19,6 +20,52 @@ use std::{
 };
 use tar::Builder;
 use xz2::write::XzEncoder;
+
+pub struct ScriptedSyncPrompts {
+    answers: Mutex<Vec<String>>,
+}
+
+impl ScriptedSyncPrompts {
+    pub fn new(answers: &[&str]) -> Self {
+        Self {
+            answers: Mutex::new(answers.iter().map(|answer| (*answer).to_string()).collect()),
+        }
+    }
+
+    fn next_answer(&self, prompt: &str) -> Result<String, String> {
+        let mut answers = self.answers.lock().unwrap();
+        if answers.is_empty() {
+            return Err(format!("no scripted answer left for prompt `{prompt}`"));
+        }
+        Ok(answers.remove(0))
+    }
+}
+
+impl SyncPrompts for ScriptedSyncPrompts {
+    fn select_asset(
+        &self,
+        _repo: &str,
+        _release_tag: &str,
+        _assets: &[String],
+    ) -> Result<String, String> {
+        self.next_answer("select_asset")
+    }
+
+    fn input_binaries(
+        &self,
+        _package: &str,
+        _asset_name: &str,
+        _suggested_binaries: &[String],
+    ) -> Result<Vec<String>, String> {
+        let answer = self.next_answer("input_binaries")?;
+        Ok(answer
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .collect())
+    }
+}
 
 pub fn write_tar_gz(archive_path: &Path, source_dir: &Path, file_name: &str) {
     let tar_gz = fs::File::create(archive_path).unwrap();

@@ -50,7 +50,10 @@ binaries = ["rg"]
 
     assert_eq!(github.repo, "BurntSushi/ripgrep");
     assert_eq!(github.channel, "stable");
-    assert_eq!(selection.asset, "ripgrep-14.1.0-aarch64-apple-darwin.tar.gz");
+    assert_eq!(
+        selection.asset,
+        "ripgrep-14.1.0-aarch64-apple-darwin.tar.gz"
+    );
     assert_eq!(selection.binaries, vec!["rg"]);
 
     let rendered = manifest.to_toml().unwrap();
@@ -201,6 +204,54 @@ fn first_sync_creates_manifest_with_stable_channel_and_checksum() {
     assert!(manifest.contains("repo = \"BurntSushi/ripgrep\""));
     assert!(manifest.contains("channel = \"stable\""));
     assert!(manifest.contains("checksum = \"sha256:"));
+}
+
+#[test]
+fn first_sync_uses_prompted_asset_for_current_platform() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let current_archive_name = tests_support::platform_archive_name("nvim", "0.10.0");
+    let current_archive_path =
+        tests_support::write_named_tar_gz(temp.path(), &current_archive_name, "nvim");
+    let other_archive_name = match tests_support::current_platform_key() {
+        "linux-x86_64" => "nvim-0.10.0-aarch64-unknown-linux-musl.tar.gz",
+        "linux-aarch64" => "nvim-0.10.0-x86_64-unknown-linux-musl.tar.gz",
+        "macos-x86_64" => "nvim-0.10.0-aarch64-apple-darwin.tar.gz",
+        "macos-aarch64" => "nvim-0.10.0-x86_64-apple-darwin.tar.gz",
+        _ => panic!("unsupported test host"),
+    };
+    let other_archive_path =
+        tests_support::write_named_tar_gz(temp.path(), other_archive_name, "nvim");
+    let prompts = tests_support::ScriptedSyncPrompts::new(&["2", "bin/nvim"]);
+    let server = tests_support::spawn_github_server(vec![tests_support::release_json(
+        "v0.10.0",
+        false,
+        false,
+        vec![
+            tests_support::asset_json(
+                other_archive_name,
+                &tests_support::file_url(&other_archive_path),
+            ),
+            tests_support::asset_json(
+                &current_archive_name,
+                &tests_support::file_url(&current_archive_path),
+            ),
+        ],
+    )]);
+
+    sync::sync_repo_with_api_base_and_prompt(&paths, "neovim/neovim", server.api_base(), &prompts)
+        .unwrap();
+
+    let manifest = fs::read_to_string(paths.manifest_dirs[0].join("neovim.toml")).unwrap();
+    assert!(manifest.contains("version = \"0.10.0\""));
+    assert!(manifest.contains("repo = \"neovim/neovim\""));
+    assert!(manifest.contains("channel = \"stable\""));
+    assert!(manifest.contains(&format!(
+        "[source.github.platform.{}]",
+        tests_support::current_platform_key()
+    )));
+    assert!(manifest.contains(&format!("asset = \"{current_archive_name}\"")));
+    assert!(manifest.contains("binaries = [\"bin/nvim\"]"));
 }
 
 #[test]

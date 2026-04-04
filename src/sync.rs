@@ -1,13 +1,30 @@
 use crate::{
     config::HivePaths,
     github::{GitHubClient, Release},
-    manifest::{Artifact, GitHubSource, Manifest, ManifestSource},
+    manifest::{Artifact, GitHubPlatformSelection, GitHubSource, Manifest, ManifestSource},
+    platform::Platform,
     proxy,
 };
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 const DEFAULT_GITHUB_API_BASE: &str = "https://api.github.com";
+
+pub trait SyncPrompts {
+    fn select_asset(
+        &self,
+        repo: &str,
+        release_tag: &str,
+        assets: &[String],
+    ) -> Result<String, String>;
+
+    fn input_binaries(
+        &self,
+        package: &str,
+        asset_name: &str,
+        suggested_binaries: &[String],
+    ) -> Result<Vec<String>, String>;
+}
 
 pub fn sync_repo(paths: &HivePaths, repo: &str) -> Result<(), String> {
     sync_repo_with_api_base(paths, repo, DEFAULT_GITHUB_API_BASE)
@@ -17,6 +34,24 @@ pub fn sync_repo_with_api_base(
     paths: &HivePaths,
     repo: &str,
     api_base: &str,
+) -> Result<(), String> {
+    sync_repo_with_api_base_impl(paths, repo, api_base, None)
+}
+
+pub fn sync_repo_with_api_base_and_prompt(
+    paths: &HivePaths,
+    repo: &str,
+    api_base: &str,
+    prompts: &dyn SyncPrompts,
+) -> Result<(), String> {
+    sync_repo_with_api_base_impl(paths, repo, api_base, Some(prompts))
+}
+
+fn sync_repo_with_api_base_impl(
+    paths: &HivePaths,
+    repo: &str,
+    api_base: &str,
+    prompts: Option<&dyn SyncPrompts>,
 ) -> Result<(), String> {
     let (_, package) = parse_repo(repo)?;
     let manifest_path = paths.manifest_dirs[0].join(format!("{package}.toml"));
@@ -49,6 +84,13 @@ pub fn sync_repo_with_api_base(
 
     let client = GitHubClient::new(api_base, proxy::build_http_client()?);
     let release = client.latest_release(repo, &source.channel)?;
+    let source = match prompts {
+        Some(prompts) if existing.is_none() => {
+            prompt_for_initial_platform_selection(package, &source, &release, prompts)?
+        }
+        None => source,
+        Some(_) => source,
+    };
     let manifest =
         build_manifest_from_release(package, &source, existing.as_ref(), &release, &client)?;
 
@@ -83,9 +125,16 @@ fn build_manifest_from_release(
             continue;
         };
 
-        let binaries = existing
-            .and_then(|manifest| manifest.platform.get(platform_key))
-            .map(|artifact| artifact.binaries.clone())
+        let binaries = source
+            .platform
+            .get(platform_key)
+            .filter(|selection| selection.asset == asset.name)
+            .map(|selection| selection.binaries.clone())
+            .or_else(|| {
+                existing
+                    .and_then(|manifest| manifest.platform.get(platform_key))
+                    .map(|artifact| artifact.binaries.clone())
+            })
             .unwrap_or_else(|| vec![package.to_string()]);
         let bytes = read_artifact_bytes(client, &asset.browser_download_url)?;
         let checksum = format!("sha256:{:x}", Sha256::digest(&bytes));
@@ -130,6 +179,62 @@ fn build_manifest_from_release(
         }),
         platform,
     })
+}
+
+fn prompt_for_initial_platform_selection(
+    package: &str,
+    source: &GitHubSource,
+    release: &Release,
+    prompts: &dyn SyncPrompts,
+) -> Result<GitHubSource, String> {
+    let current_platform = Platform::current()?.to_string();
+    if source.platform.contains_key(&current_platform) {
+        return Ok(source.clone());
+    }
+
+    let asset_names = release
+        .assets
+        .iter()
+        .map(|asset| asset.name.clone())
+        .collect::<Vec<_>>();
+    let selected_asset = resolve_selected_asset_name(
+        &asset_names,
+        &prompts.select_asset(&source.repo, &release.tag_name, &asset_names)?,
+    )?;
+    let selected_platform = map_asset_to_platform(&selected_asset)
+        .ok_or_else(|| format!("selected asset `{selected_asset}` is not supported"))?;
+
+    if selected_platform != current_platform {
+        return Err(format!(
+            "selected asset `{selected_asset}` does not match current platform `{current_platform}`"
+        ));
+    }
+
+    let suggested_binaries = vec![package.to_string()];
+    let binaries = prompts.input_binaries(package, &selected_asset, &suggested_binaries)?;
+    let mut prompted = source.clone();
+    prompted.platform.insert(
+        current_platform,
+        GitHubPlatformSelection {
+            asset: selected_asset,
+            binaries,
+        },
+    );
+    Ok(prompted)
+}
+
+fn resolve_selected_asset_name(assets: &[String], selection: &str) -> Result<String, String> {
+    if let Ok(index) = selection.parse::<usize>() {
+        if let Some(asset) = assets.get(index.saturating_sub(1)) {
+            return Ok(asset.clone());
+        }
+    }
+
+    assets
+        .iter()
+        .find(|asset| asset.as_str() == selection)
+        .cloned()
+        .ok_or_else(|| format!("selected asset `{selection}` was not found"))
 }
 
 fn parse_repo(repo: &str) -> Result<(&str, &str), String> {
