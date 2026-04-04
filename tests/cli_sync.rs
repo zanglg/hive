@@ -338,6 +338,91 @@ fn cli_sync_routes_through_terminal_prompts_for_current_platform() {
 }
 
 #[test]
+fn cli_sync_keeps_saved_defaults_when_terminal_inputs_are_empty() {
+    let _env = tests_support::lock_env();
+    let temp = tempdir().unwrap();
+    let home = temp.path();
+    let manifest_dir = home.join(".config/hive/manifests");
+    let manifest_path = manifest_dir.join("ripgrep.toml");
+    let current_platform = tests_support::current_platform_key().to_string();
+    let archive_name = tests_support::platform_archive_name("ripgrep", "14.1.0");
+    let archive_path = tests_support::write_named_tar_gz(temp.path(), &archive_name, "rg");
+    let archive_url = tests_support::file_url(&archive_path);
+    let checksum = format!(
+        "sha256:{:x}",
+        Sha256::digest(fs::read(&archive_path).unwrap())
+    );
+    let mut manifest = tests_support::manifest_with_github_source(
+        "ripgrep",
+        "14.0.0",
+        "BurntSushi/ripgrep",
+        "stable",
+    );
+    manifest
+        .source
+        .as_mut()
+        .unwrap()
+        .github
+        .as_mut()
+        .unwrap()
+        .platform
+        .insert(
+            current_platform.clone(),
+            GitHubPlatformSelection {
+                asset: archive_name.clone(),
+                binaries: vec!["bin/rg".to_string()],
+            },
+        );
+    manifest
+        .platform
+        .get_mut(&current_platform)
+        .unwrap()
+        .binaries = vec!["bin/rg".to_string()];
+    fs::create_dir_all(&manifest_dir).unwrap();
+    fs::write(&manifest_path, manifest.to_toml().unwrap()).unwrap();
+    let server = tests_support::spawn_github_server(vec![tests_support::release_json(
+        "v14.1.0",
+        false,
+        false,
+        vec![tests_support::asset_json(&archive_name, &archive_url)],
+    )]);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hive"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env("HOME", home)
+        .env("HIVE_GITHUB_API_BASE", server.api_base())
+        .arg("sync")
+        .arg("BurntSushi/ripgrep")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.as_mut().unwrap().write_all(b"\n\n").unwrap();
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let manifest = Manifest::from_toml(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    let github = manifest.source.as_ref().unwrap().github.as_ref().unwrap();
+    let selection = github.platform.get(&current_platform).unwrap();
+    let artifact = manifest.platform.get(&current_platform).unwrap();
+
+    assert_eq!(manifest.version, "14.1.0");
+    assert_eq!(selection.asset, archive_name);
+    assert_eq!(selection.binaries, vec!["bin/rg".to_string()]);
+    assert_eq!(artifact.url, archive_url);
+    assert_eq!(artifact.checksum, checksum);
+    assert_eq!(artifact.binaries, vec!["bin/rg".to_string()]);
+}
+
+#[test]
 fn sync_preserves_other_platform_artifacts_when_updating_current_platform() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
@@ -546,6 +631,291 @@ fn sync_rejects_prompted_asset_with_unsupported_archive_format() {
 
     assert!(error.contains("unsupported archive format"));
     assert!(!paths.manifest_dirs[0].join("ripgrep.toml").exists());
+}
+
+#[test]
+fn sync_keeps_saved_asset_and_binaries_when_prompt_inputs_are_empty() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let current_platform = tests_support::current_platform_key().to_string();
+    let archive_name = tests_support::platform_archive_name("ripgrep", "14.1.0");
+    let archive_path = tests_support::write_named_tar_gz(temp.path(), &archive_name, "rg");
+    let archive_url = tests_support::file_url(&archive_path);
+    let checksum = format!(
+        "sha256:{:x}",
+        Sha256::digest(fs::read(&archive_path).unwrap())
+    );
+    let mut manifest = tests_support::manifest_with_github_source(
+        "ripgrep",
+        "14.0.0",
+        "BurntSushi/ripgrep",
+        "stable",
+    );
+    manifest
+        .source
+        .as_mut()
+        .unwrap()
+        .github
+        .as_mut()
+        .unwrap()
+        .platform
+        .insert(
+            current_platform.clone(),
+            GitHubPlatformSelection {
+                asset: archive_name.clone(),
+                binaries: vec!["bin/rg".to_string(), "bin/rgp".to_string()],
+            },
+        );
+    manifest
+        .platform
+        .get_mut(&current_platform)
+        .unwrap()
+        .binaries = vec!["bin/rg".to_string(), "bin/rgp".to_string()];
+    fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
+    fs::write(
+        paths.manifest_dirs[0].join("ripgrep.toml"),
+        manifest.to_toml().unwrap(),
+    )
+    .unwrap();
+    let prompts = tests_support::ScriptedSyncPrompts::new(&["", ""]);
+    let server = tests_support::spawn_github_server(vec![tests_support::release_json(
+        "v14.1.0",
+        false,
+        false,
+        vec![tests_support::asset_json(&archive_name, &archive_url)],
+    )]);
+
+    sync::sync_repo_with_api_base_and_prompt(
+        &paths,
+        "BurntSushi/ripgrep",
+        server.api_base(),
+        &prompts,
+    )
+    .unwrap();
+
+    let manifest = Manifest::from_toml(
+        &fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap(),
+    )
+    .unwrap();
+    let github = manifest.source.as_ref().unwrap().github.as_ref().unwrap();
+    let selection = github.platform.get(&current_platform).unwrap();
+    let artifact = manifest.platform.get(&current_platform).unwrap();
+
+    assert_eq!(manifest.version, "14.1.0");
+    assert_eq!(selection.asset, archive_name);
+    assert_eq!(
+        selection.binaries,
+        vec!["bin/rg".to_string(), "bin/rgp".to_string()]
+    );
+    assert_eq!(artifact.url, archive_url);
+    assert_eq!(artifact.checksum, checksum);
+    assert_eq!(
+        artifact.binaries,
+        vec!["bin/rg".to_string(), "bin/rgp".to_string()]
+    );
+}
+
+#[test]
+fn sync_leaves_existing_manifest_unchanged_when_prompted_asset_is_invalid() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let current_platform = tests_support::current_platform_key().to_string();
+    let archive_name = tests_support::platform_archive_name("ripgrep", "14.1.0");
+    let archive_path = tests_support::write_named_tar_gz(temp.path(), &archive_name, "rg");
+    let archive_url = tests_support::file_url(&archive_path);
+    let mut manifest = tests_support::manifest_with_github_source(
+        "ripgrep",
+        "14.0.0",
+        "BurntSushi/ripgrep",
+        "stable",
+    );
+    manifest
+        .source
+        .as_mut()
+        .unwrap()
+        .github
+        .as_mut()
+        .unwrap()
+        .platform
+        .insert(
+            current_platform,
+            GitHubPlatformSelection {
+                asset: archive_name.clone(),
+                binaries: vec!["bin/rg".to_string()],
+            },
+        );
+    fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
+    fs::write(
+        paths.manifest_dirs[0].join("ripgrep.toml"),
+        manifest.to_toml().unwrap(),
+    )
+    .unwrap();
+    let before = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
+    let prompts = tests_support::ScriptedSyncPrompts::new(&["99"]);
+    let server = tests_support::spawn_github_server(vec![tests_support::release_json(
+        "v14.1.0",
+        false,
+        false,
+        vec![tests_support::asset_json(&archive_name, &archive_url)],
+    )]);
+
+    let error = sync::sync_repo_with_api_base_and_prompt(
+        &paths,
+        "BurntSushi/ripgrep",
+        server.api_base(),
+        &prompts,
+    )
+    .unwrap_err();
+
+    assert!(error.contains("selected asset `99` was not found"));
+    let after = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
+    assert_eq!(after, before);
+}
+
+#[test]
+fn sync_rejects_empty_asset_prompt_when_no_saved_default_exists() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let other_platform = tests_support::alternate_platform_key();
+    tests_support::write_manifest_with_github_source_platforms(
+        &paths,
+        "ripgrep",
+        "14.0.0",
+        "BurntSushi/ripgrep",
+        "stable",
+        &[(
+            other_platform,
+            "https://example.invalid/other-platform.tar.gz",
+            "sha256:other-platform",
+            &["bin/rg-other"],
+        )],
+    );
+    let before = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
+    let archive_name = tests_support::platform_archive_name("ripgrep", "14.1.0");
+    let archive_path = tests_support::write_named_tar_gz(temp.path(), &archive_name, "rg");
+    let prompts = tests_support::ScriptedSyncPrompts::new(&[""]);
+    let server = tests_support::spawn_github_server(vec![tests_support::release_json(
+        "v14.1.0",
+        false,
+        false,
+        vec![tests_support::asset_json(
+            &archive_name,
+            &tests_support::file_url(&archive_path),
+        )],
+    )]);
+
+    let error = sync::sync_repo_with_api_base_and_prompt(
+        &paths,
+        "BurntSushi/ripgrep",
+        server.api_base(),
+        &prompts,
+    )
+    .unwrap_err();
+
+    assert!(error.contains("asset selection cannot be empty"));
+    let after = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
+    assert_eq!(after, before);
+}
+
+#[test]
+fn sync_leaves_existing_manifest_unchanged_when_prompted_asset_suffix_is_unsupported() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let current_platform = tests_support::current_platform_key().to_string();
+    let archive_name = tests_support::platform_archive_name("ripgrep", "14.0.0");
+    let mut manifest = tests_support::manifest_with_github_source(
+        "ripgrep",
+        "14.0.0",
+        "BurntSushi/ripgrep",
+        "stable",
+    );
+    manifest
+        .source
+        .as_mut()
+        .unwrap()
+        .github
+        .as_mut()
+        .unwrap()
+        .platform
+        .insert(
+            current_platform,
+            GitHubPlatformSelection {
+                asset: archive_name,
+                binaries: vec!["bin/rg".to_string()],
+            },
+        );
+    fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
+    fs::write(
+        paths.manifest_dirs[0].join("ripgrep.toml"),
+        manifest.to_toml().unwrap(),
+    )
+    .unwrap();
+    let before = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
+    let prompts = tests_support::ScriptedSyncPrompts::new(&["1"]);
+    let server = tests_support::spawn_github_server(vec![tests_support::release_json(
+        "v14.1.0",
+        false,
+        false,
+        vec![tests_support::asset_json(
+            "ripgrep-14.1.0-checksums.txt",
+            "https://example.invalid/ripgrep-14.1.0-checksums.txt",
+        )],
+    )]);
+
+    let error = sync::sync_repo_with_api_base_and_prompt(
+        &paths,
+        "BurntSushi/ripgrep",
+        server.api_base(),
+        &prompts,
+    )
+    .unwrap_err();
+
+    assert!(error.contains("unsupported archive format"));
+    let after = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
+    assert_eq!(after, before);
+}
+
+#[test]
+fn sync_leaves_existing_manifest_unchanged_when_binary_prompt_is_empty_without_default() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let other_platform = tests_support::alternate_platform_key();
+    let archive_name = tests_support::platform_archive_name("ripgrep", "14.1.0");
+    let archive_path = tests_support::write_named_tar_gz(temp.path(), &archive_name, "rg");
+    let archive_url = tests_support::file_url(&archive_path);
+    tests_support::write_manifest_with_github_source_platforms(
+        &paths,
+        "ripgrep",
+        "14.0.0",
+        "BurntSushi/ripgrep",
+        "stable",
+        &[(
+            other_platform,
+            "https://example.invalid/other-platform.tar.gz",
+            "sha256:other-platform",
+            &["bin/rg-other"],
+        )],
+    );
+    let before = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
+    let prompts = tests_support::ScriptedSyncPrompts::new(&["1", ""]);
+    let server = tests_support::spawn_github_server(vec![tests_support::release_json(
+        "v14.1.0",
+        false,
+        false,
+        vec![tests_support::asset_json(&archive_name, &archive_url)],
+    )]);
+
+    let error = sync::sync_repo_with_api_base_and_prompt(
+        &paths,
+        "BurntSushi/ripgrep",
+        server.api_base(),
+        &prompts,
+    )
+    .unwrap_err();
+
+    assert!(error.contains("binary list cannot be empty"));
+    let after = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
+    assert_eq!(after, before);
 }
 
 #[test]

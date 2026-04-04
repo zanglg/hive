@@ -185,16 +185,20 @@ fn resolve_current_platform_selection(
     prompts: Option<&dyn SyncPrompts>,
 ) -> Result<GitHubSource, String> {
     let saved_selection = source.platform.get(current_platform).cloned();
-    let inferred_asset =
-        infer_asset_name_from_existing_artifact(existing, current_platform, release);
-    let suggested_binaries = saved_selection
+    let default_asset = saved_selection
+        .as_ref()
+        .map(|selection| selection.asset.clone())
+        .or_else(|| infer_asset_name_from_existing_artifact(existing, current_platform, release));
+    let default_binaries = saved_selection
         .as_ref()
         .map(|selection| selection.binaries.clone())
         .or_else(|| {
             existing
                 .and_then(|manifest| manifest.platform.get(current_platform))
                 .map(|artifact| artifact.binaries.clone())
-        })
+        });
+    let suggested_binaries = default_binaries
+        .clone()
         .unwrap_or_else(|| vec![package.to_string()]);
     let selected_asset = match prompts {
         Some(prompts) => {
@@ -203,22 +207,34 @@ fn resolve_current_platform_selection(
                 .iter()
                 .map(|asset| asset.name.clone())
                 .collect::<Vec<_>>();
-            resolve_selected_asset_name(
+            let selection =
+                match prompts.select_asset(&source.repo, &release.tag_name, &asset_names) {
+                    Ok(selection) => selection,
+                    Err(error) if error == "asset selection cannot be empty" => String::new(),
+                    Err(error) => return Err(error),
+                };
+            resolve_prompted_asset_name(
+                current_platform,
                 &asset_names,
-                &prompts.select_asset(&source.repo, &release.tag_name, &asset_names)?,
+                &selection,
+                default_asset.clone(),
             )?
         }
-        None => saved_selection
-            .as_ref()
-            .map(|selection| selection.asset.clone())
-            .or(inferred_asset)
-            .ok_or_else(|| {
-                format!("missing GitHub asset selection for current platform `{current_platform}`")
-            })?,
+        None => default_asset.ok_or_else(|| {
+            format!("missing GitHub asset selection for current platform `{current_platform}`")
+        })?,
     };
     ensure_supported_asset_name(&selected_asset)?;
     let binaries = match prompts {
-        Some(prompts) => prompts.input_binaries(package, &selected_asset, &suggested_binaries)?,
+        Some(prompts) => {
+            let binaries =
+                match prompts.input_binaries(package, &selected_asset, &suggested_binaries) {
+                    Ok(binaries) => binaries,
+                    Err(error) if error == "binary list cannot be empty" => Vec::new(),
+                    Err(error) => return Err(error),
+                };
+            resolve_prompted_binaries(current_platform, binaries, default_binaries)?
+        }
         None => suggested_binaries,
     };
     let mut prompted = source.clone();
@@ -230,6 +246,40 @@ fn resolve_current_platform_selection(
         },
     );
     Ok(prompted)
+}
+
+fn resolve_prompted_asset_name(
+    current_platform: &str,
+    assets: &[String],
+    selection: &str,
+    default_asset: Option<String>,
+) -> Result<String, String> {
+    let trimmed = selection.trim();
+    if trimmed.is_empty() {
+        return default_asset.ok_or_else(|| {
+            format!(
+                "asset selection cannot be empty without a saved default for current platform `{current_platform}`"
+            )
+        });
+    }
+
+    resolve_selected_asset_name(assets, trimmed)
+}
+
+fn resolve_prompted_binaries(
+    current_platform: &str,
+    binaries: Vec<String>,
+    default_binaries: Option<Vec<String>>,
+) -> Result<Vec<String>, String> {
+    if binaries.is_empty() {
+        return default_binaries.ok_or_else(|| {
+            format!(
+                "binary list cannot be empty without saved binaries for current platform `{current_platform}`"
+            )
+        });
+    }
+
+    Ok(binaries)
 }
 
 fn resolve_selected_asset_name(assets: &[String], selection: &str) -> Result<String, String> {

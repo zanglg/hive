@@ -401,6 +401,16 @@ pub fn current_platform_key() -> &'static str {
     }
 }
 
+pub fn alternate_platform_key() -> &'static str {
+    match current_platform_key() {
+        "linux-x86_64" => "macos-aarch64",
+        "linux-aarch64" => "macos-x86_64",
+        "macos-x86_64" => "linux-aarch64",
+        "macos-aarch64" => "linux-x86_64",
+        _ => panic!("unsupported test host"),
+    }
+}
+
 pub fn platform_archive_name(package: &str, version: &str) -> String {
     match current_platform_key() {
         "linux-x86_64" => format!("{package}-{version}-x86_64-unknown-linux-musl.tar.gz"),
