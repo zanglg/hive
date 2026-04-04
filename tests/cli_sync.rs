@@ -6,6 +6,7 @@ use hive::{
     app,
     cli::{Cli, Commands},
     github::GitHubClient,
+    manifest::Manifest,
     proxy, sync,
 };
 use sha2::{Digest, Sha256};
@@ -20,6 +21,66 @@ fn parses_sync_command_with_repo_argument() {
         Commands::Sync { repo } => assert_eq!(repo, "BurntSushi/ripgrep"),
         _ => panic!("expected sync command"),
     }
+}
+
+#[test]
+fn manifest_round_trips_github_platform_selection() {
+    let contents = r#"
+name = "rg"
+version = "14.1.0"
+
+[source.github]
+repo = "BurntSushi/ripgrep"
+channel = "stable"
+
+[source.github.platform.macos-aarch64]
+asset = "ripgrep-14.1.0-aarch64-apple-darwin.tar.gz"
+binaries = ["rg"]
+
+[platform.macos-aarch64]
+url = "https://example.invalid/rg-14.1.0-aarch64.tar.gz"
+checksum = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+archive = "tar.gz"
+binaries = ["rg"]
+"#;
+
+    let manifest = Manifest::from_toml(contents).unwrap();
+    let github = manifest.source.as_ref().unwrap().github.as_ref().unwrap();
+    let selection = github.platform.get("macos-aarch64").unwrap();
+
+    assert_eq!(github.repo, "BurntSushi/ripgrep");
+    assert_eq!(github.channel, "stable");
+    assert_eq!(selection.asset, "ripgrep-14.1.0-aarch64-apple-darwin.tar.gz");
+    assert_eq!(selection.binaries, vec!["rg"]);
+
+    let rendered = manifest.to_toml().unwrap();
+    assert!(rendered.contains("[source.github.platform.macos-aarch64]"));
+    assert!(rendered.contains("asset = \"ripgrep-14.1.0-aarch64-apple-darwin.tar.gz\""));
+}
+
+#[test]
+fn manifest_without_github_platform_selection_still_parses() {
+    let contents = r#"
+name = "rg"
+version = "14.1.0"
+
+[source.github]
+repo = "BurntSushi/ripgrep"
+channel = "stable"
+
+[platform.macos-aarch64]
+url = "https://example.invalid/rg-14.1.0-aarch64.tar.gz"
+checksum = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+archive = "tar.gz"
+binaries = ["rg"]
+"#;
+
+    let manifest = Manifest::from_toml(contents).unwrap();
+    let github = manifest.source.as_ref().unwrap().github.as_ref().unwrap();
+
+    assert_eq!(github.repo, "BurntSushi/ripgrep");
+    assert_eq!(github.channel, "stable");
+    assert!(github.platform.is_empty());
 }
 
 #[test]

@@ -377,6 +377,7 @@ pub fn manifest_with_github_source(
             github: Some(GitHubSource {
                 repo: repo.to_string(),
                 channel: channel.to_string(),
+                platform: BTreeMap::new(),
             }),
         }),
         platform: BTreeMap::from([(
@@ -603,6 +604,7 @@ pub fn write_manifest_with_github_source_platforms(
             github: Some(GitHubSource {
                 repo: repo.to_string(),
                 channel: channel.to_string(),
+                platform: BTreeMap::new(),
             }),
         }),
         platform: platforms

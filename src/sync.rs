@@ -40,6 +40,7 @@ pub fn sync_repo_with_api_base(
         .unwrap_or(GitHubSource {
             repo: repo.to_string(),
             channel: "stable".to_string(),
+            platform: BTreeMap::new(),
         });
 
     if source.repo != repo {
