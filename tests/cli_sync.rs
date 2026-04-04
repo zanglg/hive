@@ -1263,9 +1263,10 @@ fn sync_is_noop_when_release_and_artifacts_are_unchanged() {
 }
 
 #[test]
-fn readme_sync_example_matches_cli_shape() {
+fn readme_sync_example_matches_interactive_flow() {
     let readme = fs::read_to_string("README.md").unwrap();
     assert!(readme.contains("hive sync BurntSushi/ripgrep"));
-    assert!(readme.contains("[source.github]"));
-    assert!(readme.contains("channel = \"stable\""));
+    assert!(readme.contains("interactive"));
+    assert!(readme.contains("[source.github.platform."));
+    assert!(readme.contains("asset = "));
 }

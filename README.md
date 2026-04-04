@@ -85,18 +85,33 @@ hive uninstall rg 14.1.0 --force
 
 ## Sync A Manifest From GitHub
 
-Create or update a local manifest from the latest qualifying GitHub release:
+`hive sync` is interactive:
 
 ```bash
 hive sync BurntSushi/ripgrep
 ```
 
-Synced manifests store their source configuration in the manifest itself:
+It fetches release metadata, then prompts only for the current platform's asset and binaries. Hive saves the chosen asset filename and binary paths in the manifest, and later syncs reuse those saved values as defaults.
+
+Synced manifests store their source configuration in the manifest itself, along with the generated artifact entry for the current platform:
 
 ```toml
+name = "rg"
+version = "14.1.0"
+
 [source.github]
 repo = "BurntSushi/ripgrep"
 channel = "stable"
+
+[source.github.platform.macos-aarch64]
+asset = "ripgrep-14.1.0-aarch64-apple-darwin.tar.gz"
+binaries = ["rg"]
+
+[platform.macos-aarch64]
+url = "https://example.invalid/rg-14.1.0-aarch64.tar.gz"
+checksum = "sha256:..."
+archive = "tar.gz"
+binaries = ["rg"]
 ```
 
 `hive install` still reads local manifests only. `hive sync` updates one local manifest file in place from GitHub release metadata.
