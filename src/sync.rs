@@ -271,20 +271,44 @@ fn infer_asset_name_from_existing_artifact(
     current_platform: &str,
     release: &Release,
 ) -> Option<String> {
-    let asset_name = existing
-        .and_then(|manifest| manifest.platform.get(current_platform))
+    let manifest = existing?;
+    let asset_name = manifest
+        .platform
+        .get(current_platform)
         .and_then(|artifact| asset_name_from_url(&artifact.url))?;
+    let current_version = &manifest.version;
+    let release_version = normalize_version(&release.tag_name);
+    let old_tag = format!("v{current_version}");
+    let mut candidates = Vec::new();
 
-    release
-        .assets
-        .iter()
-        .find(|asset| asset.name == asset_name)
-        .map(|asset| asset.name.clone())
+    push_candidate(&mut candidates, asset_name.to_string());
+    if current_version != &release_version {
+        push_candidate(
+            &mut candidates,
+            asset_name.replace(current_version, &release_version),
+        );
+    }
+    if old_tag != release.tag_name {
+        push_candidate(
+            &mut candidates,
+            asset_name.replace(&old_tag, &release.tag_name),
+        );
+    }
+
+    candidates
+        .into_iter()
+        .find(|candidate| release.assets.iter().any(|asset| asset.name == *candidate))
 }
 
 fn asset_name_from_url(url: &str) -> Option<&str> {
     let url = url.split(['?', '#']).next()?;
     url.rsplit('/').next().filter(|value| !value.is_empty())
+}
+
+fn push_candidate(candidates: &mut Vec<String>, candidate: String) {
+    if !candidates.iter().any(|existing| existing == &candidate) {
+        candidates.push(candidate);
+    }
 }
 
 fn ensure_supported_asset_name(name: &str) -> Result<(), String> {

@@ -442,13 +442,20 @@ binaries = ["bin/nvim-other"]
 }
 
 #[test]
-fn sync_uses_existing_current_platform_artifact_url_when_selection_is_missing() {
+fn sync_migrates_legacy_current_platform_asset_selection_between_release_versions() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
     let current_platform = tests_support::current_platform_key();
-    let archive_name = tests_support::platform_archive_name("ripgrep", "14.1.0");
-    let archive_path = tests_support::write_named_tar_gz(temp.path(), &archive_name, "rg");
-    let archive_url = tests_support::file_url(&archive_path);
+    let old_archive_name = tests_support::platform_archive_name("ripgrep", "14.0.0");
+    let old_archive_path = tests_support::write_named_tar_gz(temp.path(), &old_archive_name, "rg");
+    let old_archive_url = tests_support::file_url(&old_archive_path);
+    let new_archive_name = tests_support::platform_archive_name("ripgrep", "14.1.0");
+    let new_archive_path = tests_support::write_named_tar_gz(temp.path(), &new_archive_name, "rg");
+    let new_archive_url = tests_support::file_url(&new_archive_path);
+    let new_checksum = format!(
+        "sha256:{:x}",
+        Sha256::digest(fs::read(&new_archive_path).unwrap())
+    );
     let mut manifest = tests_support::manifest_with_github_source(
         "ripgrep",
         "14.0.0",
@@ -456,7 +463,7 @@ fn sync_uses_existing_current_platform_artifact_url_when_selection_is_missing() 
         "stable",
     );
     let artifact = manifest.platform.get_mut(current_platform).unwrap();
-    artifact.url = archive_url.clone();
+    artifact.url = old_archive_url;
     artifact.binaries = vec!["bin/rg".to_string()];
     fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
     fs::write(
@@ -468,7 +475,10 @@ fn sync_uses_existing_current_platform_artifact_url_when_selection_is_missing() 
         "v14.1.0",
         false,
         false,
-        vec![tests_support::asset_json(&archive_name, &archive_url)],
+        vec![tests_support::asset_json(
+            &new_archive_name,
+            &new_archive_url,
+        )],
     )]);
 
     sync::sync_repo_with_api_base(&paths, "BurntSushi/ripgrep", server.api_base()).unwrap();
@@ -482,9 +492,10 @@ fn sync_uses_existing_current_platform_artifact_url_when_selection_is_missing() 
     let artifact = manifest.platform.get(current_platform).unwrap();
 
     assert_eq!(manifest.version, "14.1.0");
-    assert_eq!(selection.asset, archive_name);
+    assert_eq!(selection.asset, new_archive_name);
     assert_eq!(selection.binaries, vec!["bin/rg".to_string()]);
-    assert_eq!(artifact.url, archive_url);
+    assert_eq!(artifact.url, new_archive_url);
+    assert_eq!(artifact.checksum, new_checksum);
     assert_eq!(artifact.binaries, vec!["bin/rg".to_string()]);
 }
 
