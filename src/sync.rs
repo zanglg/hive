@@ -84,15 +84,24 @@ fn sync_repo_with_api_base_impl(
 
     let client = GitHubClient::new(api_base, proxy::build_http_client()?);
     let release = client.latest_release(repo, &source.channel)?;
-    let source = match prompts {
-        Some(prompts) if existing.is_none() => {
-            prompt_for_initial_platform_selection(package, &source, &release, prompts)?
-        }
-        None => source,
-        Some(_) => source,
-    };
+    let current_platform = Platform::current()?.to_string();
+    let source = resolve_current_platform_selection(
+        package,
+        &source,
+        existing.as_ref(),
+        &release,
+        &current_platform,
+        prompts,
+    )?;
     let manifest =
-        build_manifest_from_release(package, &source, existing.as_ref(), &release, &client)?;
+        build_manifest_from_release(
+            package,
+            &source,
+            existing.as_ref(),
+            &release,
+            &client,
+            &current_platform,
+        )?;
 
     if existing.as_ref() == Some(&manifest) {
         return Ok(());
@@ -114,62 +123,37 @@ fn build_manifest_from_release(
     existing: Option<&Manifest>,
     release: &Release,
     client: &GitHubClient,
+    current_platform: &str,
 ) -> Result<Manifest, String> {
-    let mut platform = BTreeMap::new();
-
-    for asset in &release.assets {
-        let Some(platform_key) = map_asset_to_platform(&asset.name) else {
-            continue;
-        };
-        let Some(archive) = archive_kind_from_name(&asset.name) else {
-            continue;
-        };
-
-        let binaries = source
-            .platform
-            .get(platform_key)
-            .filter(|selection| selection.asset == asset.name)
-            .map(|selection| selection.binaries.clone())
-            .or_else(|| {
-                existing
-                    .and_then(|manifest| manifest.platform.get(platform_key))
-                    .map(|artifact| artifact.binaries.clone())
-            })
-            .unwrap_or_else(|| vec![package.to_string()]);
-        let bytes = read_artifact_bytes(client, &asset.browser_download_url)?;
-        let checksum = format!("sha256:{:x}", Sha256::digest(&bytes));
-
-        if platform.contains_key(platform_key) {
-            return Err(format!(
-                "could not map GitHub assets from release `{}` into supported Hive platforms",
-                release.tag_name
-            ));
-        }
-
-        platform.insert(
-            platform_key.to_string(),
-            Artifact {
-                url: asset.browser_download_url.clone(),
-                checksum,
-                archive: archive.to_string(),
-                binaries,
-            },
-        );
-    }
-
-    if platform.is_empty()
-        || existing.map(|manifest| {
-            manifest
-                .platform
-                .keys()
-                .all(|platform_key| platform.contains_key(platform_key))
-        }) == Some(false)
-    {
-        return Err(format!(
-            "could not map GitHub assets from release `{}` into supported Hive platforms",
-            release.tag_name
-        ));
-    }
+    let selection = source.platform.get(current_platform).ok_or_else(|| {
+        format!("missing GitHub asset selection for current platform `{current_platform}`")
+    })?;
+    let asset = release
+        .assets
+        .iter()
+        .find(|asset| asset.name == selection.asset)
+        .ok_or_else(|| {
+            format!(
+                "selected asset `{}` was not found in release `{}`",
+                selection.asset, release.tag_name
+            )
+        })?;
+    let archive = archive_kind_from_name(&asset.name)
+        .ok_or_else(|| format!("selected asset `{}` has unsupported archive format", asset.name))?;
+    let bytes = read_artifact_bytes(client, &asset.browser_download_url)?;
+    let checksum = format!("sha256:{:x}", Sha256::digest(&bytes));
+    let mut platform = existing
+        .map(|manifest| manifest.platform.clone())
+        .unwrap_or_default();
+    platform.insert(
+        current_platform.to_string(),
+        Artifact {
+            url: asset.browser_download_url.clone(),
+            checksum,
+            archive: archive.to_string(),
+            binaries: selection.binaries.clone(),
+        },
+    );
 
     Ok(Manifest {
         name: package.to_string(),
@@ -181,40 +165,50 @@ fn build_manifest_from_release(
     })
 }
 
-fn prompt_for_initial_platform_selection(
+fn resolve_current_platform_selection(
     package: &str,
     source: &GitHubSource,
+    existing: Option<&Manifest>,
     release: &Release,
-    prompts: &dyn SyncPrompts,
+    current_platform: &str,
+    prompts: Option<&dyn SyncPrompts>,
 ) -> Result<GitHubSource, String> {
-    let current_platform = Platform::current()?.to_string();
-    if source.platform.contains_key(&current_platform) {
-        return Ok(source.clone());
-    }
-
-    let asset_names = release
-        .assets
-        .iter()
-        .map(|asset| asset.name.clone())
-        .collect::<Vec<_>>();
-    let selected_asset = resolve_selected_asset_name(
-        &asset_names,
-        &prompts.select_asset(&source.repo, &release.tag_name, &asset_names)?,
-    )?;
-    let selected_platform = map_asset_to_platform(&selected_asset)
-        .ok_or_else(|| format!("selected asset `{selected_asset}` is not supported"))?;
-
-    if selected_platform != current_platform {
-        return Err(format!(
-            "selected asset `{selected_asset}` does not match current platform `{current_platform}`"
-        ));
-    }
-
-    let suggested_binaries = vec![package.to_string()];
-    let binaries = prompts.input_binaries(package, &selected_asset, &suggested_binaries)?;
+    let saved_selection = source.platform.get(current_platform).cloned();
+    let suggested_binaries = saved_selection
+        .as_ref()
+        .map(|selection| selection.binaries.clone())
+        .or_else(|| {
+            existing
+                .and_then(|manifest| manifest.platform.get(current_platform))
+                .map(|artifact| artifact.binaries.clone())
+        })
+        .unwrap_or_else(|| vec![package.to_string()]);
+    let selected_asset = match prompts {
+        Some(prompts) => {
+            let asset_names = release
+                .assets
+                .iter()
+                .map(|asset| asset.name.clone())
+                .collect::<Vec<_>>();
+            resolve_selected_asset_name(
+                &asset_names,
+                &prompts.select_asset(&source.repo, &release.tag_name, &asset_names)?,
+            )?
+        }
+        None => saved_selection
+            .as_ref()
+            .map(|selection| selection.asset.clone())
+            .ok_or_else(|| {
+                format!("missing GitHub asset selection for current platform `{current_platform}`")
+            })?,
+    };
+    let binaries = match prompts {
+        Some(prompts) => prompts.input_binaries(package, &selected_asset, &suggested_binaries)?,
+        None => suggested_binaries,
+    };
     let mut prompted = source.clone();
     prompted.platform.insert(
-        current_platform,
+        current_platform.to_string(),
         GitHubPlatformSelection {
             asset: selected_asset,
             binaries,
@@ -255,18 +249,6 @@ fn parse_repo(repo: &str) -> Result<(&str, &str), String> {
 
 fn normalize_version(tag_name: &str) -> String {
     tag_name.strip_prefix('v').unwrap_or(tag_name).to_string()
-}
-
-fn map_asset_to_platform(name: &str) -> Option<&'static str> {
-    match () {
-        _ if name.contains("x86_64-unknown-linux") => Some("linux-x86_64"),
-        _ if name.contains("aarch64-unknown-linux") => Some("linux-aarch64"),
-        _ if name.contains("x86_64-apple-darwin") => Some("macos-x86_64"),
-        _ if name.contains("aarch64-apple-darwin") || name.contains("arm64-apple-darwin") => {
-            Some("macos-aarch64")
-        }
-        _ => None,
-    }
 }
 
 fn archive_kind_from_name(name: &str) -> Option<&'static str> {

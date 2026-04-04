@@ -6,7 +6,7 @@ use hive::{
     app,
     cli::{Cli, Commands},
     github::GitHubClient,
-    manifest::Manifest,
+    manifest::{Artifact, GitHubPlatformSelection, Manifest},
     proxy, sync,
 };
 use sha2::{Digest, Sha256};
@@ -196,13 +196,24 @@ fn first_sync_creates_manifest_with_stable_channel_and_checksum() {
             &tests_support::file_url(&archive_path),
         )],
     )]);
+    let prompts = tests_support::ScriptedSyncPrompts::new(&["1", "rg"]);
 
-    sync::sync_repo_with_api_base(&paths, "BurntSushi/ripgrep", server.api_base()).unwrap();
+    sync::sync_repo_with_api_base_and_prompt(
+        &paths,
+        "BurntSushi/ripgrep",
+        server.api_base(),
+        &prompts,
+    )
+    .unwrap();
 
     let manifest = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
     assert!(manifest.contains("version = \"14.1.0\""));
     assert!(manifest.contains("repo = \"BurntSushi/ripgrep\""));
     assert!(manifest.contains("channel = \"stable\""));
+    assert!(manifest.contains(&format!(
+        "[source.github.platform.{}]",
+        tests_support::current_platform_key()
+    )));
     assert!(manifest.contains("checksum = \"sha256:"));
 }
 
@@ -255,6 +266,108 @@ fn first_sync_uses_prompted_asset_for_current_platform() {
 }
 
 #[test]
+fn sync_preserves_other_platform_artifacts_when_updating_current_platform() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let current_platform = tests_support::current_platform_key();
+    let (other_platform, other_asset_name) = match current_platform {
+        "linux-x86_64" => ("macos-aarch64", "nvim-macos-aarch64.zip"),
+        "linux-aarch64" => ("macos-x86_64", "nvim-macos-x86_64.zip"),
+        "macos-x86_64" => ("linux-aarch64", "nvim-linux-aarch64.tar.gz"),
+        "macos-aarch64" => ("linux-x86_64", "nvim-linux-x86_64.tar.gz"),
+        _ => panic!("unsupported test host"),
+    };
+    let current_archive_name = "nvim-portable.tar.gz";
+    let current_archive_path =
+        tests_support::write_named_tar_gz(temp.path(), current_archive_name, "nvim");
+    let current_archive_url = tests_support::file_url(&current_archive_path);
+    let current_checksum = format!(
+        "sha256:{:x}",
+        Sha256::digest(fs::read(&current_archive_path).unwrap())
+    );
+    fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
+    fs::write(
+        paths.manifest_dirs[0].join("neovim.toml"),
+        format!(
+            r#"
+name = "neovim"
+version = "0.9.0"
+
+[source.github]
+repo = "neovim/neovim"
+channel = "stable"
+
+[source.github.platform.{current_platform}]
+asset = "nvim-old-current.tar.gz"
+binaries = ["old/nvim"]
+
+[source.github.platform.{other_platform}]
+asset = "{other_asset_name}"
+binaries = ["bin/nvim-other"]
+
+[platform.{current_platform}]
+url = "https://example.invalid/old-current.tar.gz"
+checksum = "sha256:old-current"
+archive = "tar.gz"
+binaries = ["old/nvim"]
+
+[platform.{other_platform}]
+url = "https://example.invalid/other-platform.zip"
+checksum = "sha256:other-platform"
+archive = "zip"
+binaries = ["bin/nvim-other"]
+"#
+        ),
+    )
+    .unwrap();
+    let prompts = tests_support::ScriptedSyncPrompts::new(&[
+        current_archive_name,
+        "bin/nvim,bin/nvimdiff",
+    ]);
+    let server = tests_support::spawn_github_server(vec![tests_support::release_json(
+        "v0.10.0",
+        false,
+        false,
+        vec![tests_support::asset_json(
+            current_archive_name,
+            &current_archive_url,
+        )],
+    )]);
+
+    sync::sync_repo_with_api_base_and_prompt(&paths, "neovim/neovim", server.api_base(), &prompts)
+        .unwrap();
+
+    let manifest =
+        Manifest::from_toml(&fs::read_to_string(paths.manifest_dirs[0].join("neovim.toml")).unwrap())
+            .unwrap();
+    let github = manifest.source.as_ref().unwrap().github.as_ref().unwrap();
+    let current_selection = github.platform.get(current_platform).unwrap();
+    let other_selection = github.platform.get(other_platform).unwrap();
+    let current_artifact = manifest.platform.get(current_platform).unwrap();
+    let other_artifact = manifest.platform.get(other_platform).unwrap();
+
+    assert_eq!(manifest.version, "0.10.0");
+    assert_eq!(current_selection.asset, current_archive_name);
+    assert_eq!(
+        current_selection.binaries,
+        vec!["bin/nvim".to_string(), "bin/nvimdiff".to_string()]
+    );
+    assert_eq!(other_selection.asset, other_asset_name);
+    assert_eq!(other_selection.binaries, vec!["bin/nvim-other".to_string()]);
+    assert_eq!(current_artifact.url, current_archive_url);
+    assert_eq!(current_artifact.checksum, current_checksum);
+    assert_eq!(current_artifact.archive, "tar.gz");
+    assert_eq!(
+        current_artifact.binaries,
+        vec!["bin/nvim".to_string(), "bin/nvimdiff".to_string()]
+    );
+    assert_eq!(other_artifact.url, "https://example.invalid/other-platform.zip");
+    assert_eq!(other_artifact.checksum, "sha256:other-platform");
+    assert_eq!(other_artifact.archive, "zip");
+    assert_eq!(other_artifact.binaries, vec!["bin/nvim-other".to_string()]);
+}
+
+#[test]
 fn sync_preserves_existing_binaries_and_rejects_repo_mismatch() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
@@ -277,17 +390,34 @@ fn sync_preserves_existing_binaries_and_rejects_repo_mismatch() {
 }
 
 #[test]
-fn sync_leaves_existing_manifest_unchanged_when_asset_mapping_is_ambiguous() {
+fn sync_leaves_existing_manifest_unchanged_when_saved_asset_is_missing_from_release() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
-    tests_support::write_manifest_with_github_source_and_binaries(
-        &paths,
-        "ripgrep",
-        "14.0.0",
-        "BurntSushi/ripgrep",
-        "stable",
-        &["rg"],
-    );
+    let current_platform = tests_support::current_platform_key().to_string();
+    let selected_archive_name = tests_support::platform_archive_name("ripgrep", "14.1.0");
+    let mut manifest =
+        tests_support::manifest_with_github_source("ripgrep", "14.0.0", "BurntSushi/ripgrep", "stable");
+    manifest
+        .source
+        .as_mut()
+        .unwrap()
+        .github
+        .as_mut()
+        .unwrap()
+        .platform
+        .insert(
+            current_platform.clone(),
+            GitHubPlatformSelection {
+                asset: selected_archive_name.clone(),
+                binaries: vec!["rg".to_string()],
+            },
+        );
+    fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
+    fs::write(
+        paths.manifest_dirs[0].join("ripgrep.toml"),
+        manifest.to_toml().unwrap(),
+    )
+    .unwrap();
     let before = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
     let server = tests_support::spawn_github_server(vec![tests_support::release_json(
         "v14.1.0",
@@ -302,113 +432,212 @@ fn sync_leaves_existing_manifest_unchanged_when_asset_mapping_is_ambiguous() {
     let error =
         sync::sync_repo_with_api_base(&paths, "BurntSushi/ripgrep", server.api_base()).unwrap_err();
 
-    assert!(error.contains("could not map GitHub assets"));
+    assert!(error.contains(&format!(
+        "selected asset `{selected_archive_name}` was not found in release"
+    )));
     let after = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
     assert_eq!(after, before);
 }
 
 #[test]
-fn sync_leaves_existing_manifest_unchanged_when_release_drops_existing_platforms() {
+fn sync_preserves_other_platform_artifacts_with_saved_current_selection() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
-    tests_support::write_manifest_with_github_source_platforms(
-        &paths,
-        "ripgrep",
-        "14.0.0",
-        "BurntSushi/ripgrep",
-        "stable",
-        &[
-            (
-                "linux-x86_64",
-                "https://example.invalid/linux.tar.gz",
-                "sha256:linux",
-                &["rg"],
-            ),
-            (
-                "macos-x86_64",
-                "https://example.invalid/macos.tar.gz",
-                "sha256:macos",
-                &["rg"],
-            ),
-        ],
-    );
-    let before = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
-    let archive_name = "ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz";
-    let archive_path = tests_support::write_named_tar_gz(temp.path(), archive_name, "rg");
+    let current_platform = tests_support::current_platform_key().to_string();
+    let (other_platform, other_asset_name) = match current_platform.as_str() {
+        "linux-x86_64" => ("macos-aarch64", "ripgrep-macos-aarch64.zip"),
+        "linux-aarch64" => ("macos-x86_64", "ripgrep-macos-x86_64.zip"),
+        "macos-x86_64" => ("linux-aarch64", "ripgrep-linux-aarch64.tar.gz"),
+        "macos-aarch64" => ("linux-x86_64", "ripgrep-linux-x86_64.tar.gz"),
+        _ => panic!("unsupported test host"),
+    };
+    let archive_name = tests_support::platform_archive_name("ripgrep", "14.1.0");
+    let archive_path = tests_support::write_named_tar_gz(temp.path(), &archive_name, "rg");
+    let archive_url = tests_support::file_url(&archive_path);
+    let checksum = format!("sha256:{:x}", Sha256::digest(fs::read(&archive_path).unwrap()));
+    let mut manifest =
+        tests_support::manifest_with_github_source("ripgrep", "14.0.0", "BurntSushi/ripgrep", "stable");
+    manifest
+        .source
+        .as_mut()
+        .unwrap()
+        .github
+        .as_mut()
+        .unwrap()
+        .platform
+        .insert(
+            current_platform.clone(),
+            GitHubPlatformSelection {
+                asset: archive_name.clone(),
+                binaries: vec!["rg".to_string()],
+            },
+        );
+    manifest
+        .source
+        .as_mut()
+        .unwrap()
+        .github
+        .as_mut()
+        .unwrap()
+        .platform
+        .insert(
+            other_platform.to_string(),
+            GitHubPlatformSelection {
+                asset: other_asset_name.to_string(),
+                binaries: vec!["rg-other".to_string()],
+            },
+        );
+    manifest
+        .platform
+        .insert(
+            other_platform.to_string(),
+            Artifact {
+                url: "https://example.invalid/other-platform.zip".to_string(),
+                checksum: "sha256:other-platform".to_string(),
+                archive: "zip".to_string(),
+                binaries: vec!["rg-other".to_string()],
+            },
+        );
+    fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
+    fs::write(
+        paths.manifest_dirs[0].join("ripgrep.toml"),
+        manifest.to_toml().unwrap(),
+    )
+    .unwrap();
     let server = tests_support::spawn_github_server(vec![tests_support::release_json(
         "v14.1.0",
         false,
         false,
         vec![tests_support::asset_json(
-            archive_name,
-            &tests_support::file_url(&archive_path),
+            &archive_name,
+            &archive_url,
         )],
     )]);
 
-    let error =
-        sync::sync_repo_with_api_base(&paths, "BurntSushi/ripgrep", server.api_base()).unwrap_err();
+    sync::sync_repo_with_api_base(&paths, "BurntSushi/ripgrep", server.api_base()).unwrap();
 
-    assert!(error.contains("could not map GitHub assets"));
-    let after = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
-    assert_eq!(after, before);
+    let manifest =
+        Manifest::from_toml(&fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap())
+            .unwrap();
+    let github = manifest.source.as_ref().unwrap().github.as_ref().unwrap();
+    let other_selection = github.platform.get(other_platform).unwrap();
+    let current_artifact = manifest.platform.get(&current_platform).unwrap();
+    let other_artifact = manifest.platform.get(other_platform).unwrap();
+
+    assert_eq!(manifest.version, "14.1.0");
+    assert_eq!(current_artifact.url, archive_url);
+    assert_eq!(current_artifact.checksum, checksum);
+    assert_eq!(other_selection.asset, other_asset_name);
+    assert_eq!(other_selection.binaries, vec!["rg-other".to_string()]);
+    assert_eq!(other_artifact.url, "https://example.invalid/other-platform.zip");
+    assert_eq!(other_artifact.checksum, "sha256:other-platform");
+    assert_eq!(other_artifact.archive, "zip");
+    assert_eq!(other_artifact.binaries, vec!["rg-other".to_string()]);
 }
 
 #[test]
-fn sync_rejects_ambiguous_duplicate_platform_assets() {
+fn sync_uses_exact_saved_filename_when_release_contains_similar_assets() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
-    let linux_a = tests_support::write_named_tar_gz(
-        temp.path(),
-        "ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz",
-        "rg",
+    let current_platform = tests_support::current_platform_key().to_string();
+    let selected_archive_name = tests_support::platform_archive_name("ripgrep", "14.1.0");
+    let selected_archive_path =
+        tests_support::write_named_tar_gz(temp.path(), &selected_archive_name, "rg");
+    let selected_archive_url = tests_support::file_url(&selected_archive_path);
+    let selected_checksum = format!(
+        "sha256:{:x}",
+        Sha256::digest(fs::read(&selected_archive_path).unwrap())
     );
-    let linux_b = tests_support::write_named_tar_gz(
-        temp.path(),
-        "ripgrep-14.1.0-x86_64-unknown-linux-gnu.tar.gz",
-        "rg",
-    );
+    let similar_archive_name = selected_archive_name.replacen(".tar.gz", "-symbols.tar.gz", 1);
+    let similar_archive_path =
+        tests_support::write_named_tar_gz(temp.path(), &similar_archive_name, "rg");
+    let mut manifest =
+        tests_support::manifest_with_github_source("ripgrep", "14.0.0", "BurntSushi/ripgrep", "stable");
+    manifest
+        .source
+        .as_mut()
+        .unwrap()
+        .github
+        .as_mut()
+        .unwrap()
+        .platform
+        .insert(
+            current_platform.clone(),
+            GitHubPlatformSelection {
+                asset: selected_archive_name.clone(),
+                binaries: vec!["rg".to_string()],
+            },
+        );
+    fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
+    fs::write(
+        paths.manifest_dirs[0].join("ripgrep.toml"),
+        manifest.to_toml().unwrap(),
+    )
+    .unwrap();
     let server = tests_support::spawn_github_server(vec![tests_support::release_json(
         "v14.1.0",
         false,
         false,
         vec![
             tests_support::asset_json(
-                "ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz",
-                &tests_support::file_url(&linux_a),
+                &selected_archive_name,
+                &selected_archive_url,
             ),
             tests_support::asset_json(
-                "ripgrep-14.1.0-x86_64-unknown-linux-gnu.tar.gz",
-                &tests_support::file_url(&linux_b),
+                &similar_archive_name,
+                &tests_support::file_url(&similar_archive_path),
             ),
         ],
     )]);
 
-    let error =
-        sync::sync_repo_with_api_base(&paths, "BurntSushi/ripgrep", server.api_base()).unwrap_err();
+    sync::sync_repo_with_api_base(&paths, "BurntSushi/ripgrep", server.api_base()).unwrap();
 
-    assert!(error.contains("could not map GitHub assets"));
-    assert!(!paths.manifest_dirs[0].join("ripgrep.toml").exists());
+    let manifest =
+        Manifest::from_toml(&fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap())
+            .unwrap();
+    let artifact = manifest.platform.get(&current_platform).unwrap();
+
+    assert_eq!(artifact.url, selected_archive_url);
+    assert_eq!(artifact.checksum, selected_checksum);
 }
 
 #[test]
 fn sync_is_noop_when_release_and_artifacts_are_unchanged() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());
+    let current_platform = tests_support::current_platform_key().to_string();
     let archive_name = tests_support::platform_archive_name("ripgrep", "14.1.0");
     let archive_path = tests_support::write_named_tar_gz(temp.path(), &archive_name, "ripgrep");
     let checksum = format!(
         "sha256:{:x}",
         Sha256::digest(fs::read(&archive_path).unwrap())
     );
-    tests_support::write_manifest_with_github_source_and_checksum(
-        &paths,
-        "ripgrep",
-        "14.1.0",
-        "BurntSushi/ripgrep",
-        "stable",
-        &tests_support::file_url(&archive_path),
-        &checksum,
-    );
+    let mut manifest =
+        tests_support::manifest_with_github_source("ripgrep", "14.1.0", "BurntSushi/ripgrep", "stable");
+    manifest
+        .source
+        .as_mut()
+        .unwrap()
+        .github
+        .as_mut()
+        .unwrap()
+        .platform
+        .insert(
+            current_platform.clone(),
+            GitHubPlatformSelection {
+                asset: archive_name.clone(),
+                binaries: vec!["ripgrep".to_string()],
+            },
+        );
+    let artifact = manifest.platform.get_mut(&current_platform).unwrap();
+    artifact.url = tests_support::file_url(&archive_path);
+    artifact.checksum = checksum.clone();
+    fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
+    fs::write(
+        paths.manifest_dirs[0].join("ripgrep.toml"),
+        manifest.to_toml().unwrap(),
+    )
+    .unwrap();
     let before = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
     let server = tests_support::spawn_github_server(vec![tests_support::release_json(
         "v14.1.0",
