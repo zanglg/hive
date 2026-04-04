@@ -10,20 +10,25 @@ use std::{collections::BTreeMap, fs, path::PathBuf};
 
 const DEFAULT_GITHUB_API_BASE: &str = "https://api.github.com";
 
+pub enum PromptInput<T> {
+    Value(T),
+    Default,
+}
+
 pub trait SyncPrompts {
     fn select_asset(
         &self,
         repo: &str,
         release_tag: &str,
         assets: &[String],
-    ) -> Result<String, String>;
+    ) -> Result<PromptInput<String>, String>;
 
     fn input_binaries(
         &self,
         package: &str,
         asset_name: &str,
         suggested_binaries: &[String],
-    ) -> Result<Vec<String>, String>;
+    ) -> Result<PromptInput<Vec<String>>, String>;
 }
 
 pub fn sync_repo(paths: &HivePaths, repo: &str) -> Result<(), String> {
@@ -207,16 +212,10 @@ fn resolve_current_platform_selection(
                 .iter()
                 .map(|asset| asset.name.clone())
                 .collect::<Vec<_>>();
-            let selection =
-                match prompts.select_asset(&source.repo, &release.tag_name, &asset_names) {
-                    Ok(selection) => selection,
-                    Err(error) if error == "asset selection cannot be empty" => String::new(),
-                    Err(error) => return Err(error),
-                };
             resolve_prompted_asset_name(
                 current_platform,
                 &asset_names,
-                &selection,
+                prompts.select_asset(&source.repo, &release.tag_name, &asset_names)?,
                 default_asset.clone(),
             )?
         }
@@ -226,15 +225,11 @@ fn resolve_current_platform_selection(
     };
     ensure_supported_asset_name(&selected_asset)?;
     let binaries = match prompts {
-        Some(prompts) => {
-            let binaries =
-                match prompts.input_binaries(package, &selected_asset, &suggested_binaries) {
-                    Ok(binaries) => binaries,
-                    Err(error) if error == "binary list cannot be empty" => Vec::new(),
-                    Err(error) => return Err(error),
-                };
-            resolve_prompted_binaries(current_platform, binaries, default_binaries)?
-        }
+        Some(prompts) => resolve_prompted_binaries(
+            current_platform,
+            prompts.input_binaries(package, &selected_asset, &suggested_binaries)?,
+            default_binaries,
+        )?,
         None => suggested_binaries,
     };
     let mut prompted = source.clone();
@@ -251,35 +246,32 @@ fn resolve_current_platform_selection(
 fn resolve_prompted_asset_name(
     current_platform: &str,
     assets: &[String],
-    selection: &str,
+    selection: PromptInput<String>,
     default_asset: Option<String>,
 ) -> Result<String, String> {
-    let trimmed = selection.trim();
-    if trimmed.is_empty() {
-        return default_asset.ok_or_else(|| {
+    match selection {
+        PromptInput::Value(selection) => resolve_selected_asset_name(assets, &selection),
+        PromptInput::Default => default_asset.ok_or_else(|| {
             format!(
                 "asset selection cannot be empty without a saved default for current platform `{current_platform}`"
             )
-        });
+        }),
     }
-
-    resolve_selected_asset_name(assets, trimmed)
 }
 
 fn resolve_prompted_binaries(
     current_platform: &str,
-    binaries: Vec<String>,
+    binaries: PromptInput<Vec<String>>,
     default_binaries: Option<Vec<String>>,
 ) -> Result<Vec<String>, String> {
-    if binaries.is_empty() {
-        return default_binaries.ok_or_else(|| {
+    match binaries {
+        PromptInput::Value(binaries) => Ok(binaries),
+        PromptInput::Default => default_binaries.ok_or_else(|| {
             format!(
                 "binary list cannot be empty without saved binaries for current platform `{current_platform}`"
             )
-        });
+        }),
     }
-
-    Ok(binaries)
 }
 
 fn resolve_selected_asset_name(assets: &[String], selection: &str) -> Result<String, String> {

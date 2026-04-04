@@ -103,11 +103,7 @@ impl<R: BufRead, W: Write> TerminalSyncPrompts<R, W> {
             .borrow_mut()
             .read_line(&mut line)
             .map_err(|error| format!("failed to read {prompt_name}: {error}"))?;
-        let trimmed = line.trim().to_string();
-        if trimmed.is_empty() {
-            return Err(format!("{prompt_name} cannot be empty"));
-        }
-        Ok(trimmed)
+        Ok(line.trim().to_string())
     }
 }
 
@@ -117,7 +113,7 @@ impl<R: BufRead, W: Write> sync::SyncPrompts for TerminalSyncPrompts<R, W> {
         repo: &str,
         release_tag: &str,
         assets: &[String],
-    ) -> Result<String, String> {
+    ) -> Result<sync::PromptInput<String>, String> {
         {
             let mut output = self.output.borrow_mut();
             writeln!(
@@ -135,7 +131,11 @@ impl<R: BufRead, W: Write> sync::SyncPrompts for TerminalSyncPrompts<R, W> {
                 .flush()
                 .map_err(|error| format!("failed to flush prompt: {error}"))?;
         }
-        self.read_line("asset selection")
+        let selection = self.read_line("asset selection")?;
+        if selection.is_empty() {
+            return Ok(sync::PromptInput::Default);
+        }
+        Ok(sync::PromptInput::Value(selection))
     }
 
     fn input_binaries(
@@ -143,7 +143,7 @@ impl<R: BufRead, W: Write> sync::SyncPrompts for TerminalSyncPrompts<R, W> {
         package: &str,
         asset_name: &str,
         suggested_binaries: &[String],
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<sync::PromptInput<Vec<String>>, String> {
         {
             let mut output = self.output.borrow_mut();
             writeln!(
@@ -159,8 +159,11 @@ impl<R: BufRead, W: Write> sync::SyncPrompts for TerminalSyncPrompts<R, W> {
                 .flush()
                 .map_err(|error| format!("failed to flush prompt: {error}"))?;
         }
-        let binaries = self
-            .read_line("binary list")?
+        let input = self.read_line("binary list")?;
+        if input.is_empty() {
+            return Ok(sync::PromptInput::Default);
+        }
+        let binaries = input
             .split(',')
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -169,7 +172,7 @@ impl<R: BufRead, W: Write> sync::SyncPrompts for TerminalSyncPrompts<R, W> {
         if binaries.is_empty() {
             return Err("binary list cannot be empty".to_string());
         }
-        Ok(binaries)
+        Ok(sync::PromptInput::Value(binaries))
     }
 }
 

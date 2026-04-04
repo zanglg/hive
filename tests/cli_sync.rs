@@ -919,6 +919,68 @@ fn sync_leaves_existing_manifest_unchanged_when_binary_prompt_is_empty_without_d
 }
 
 #[test]
+fn sync_rejects_comma_only_binary_input_and_leaves_manifest_unchanged() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let current_platform = tests_support::current_platform_key().to_string();
+    let archive_name = tests_support::platform_archive_name("ripgrep", "14.1.0");
+    let archive_path = tests_support::write_named_tar_gz(temp.path(), &archive_name, "rg");
+    let archive_url = tests_support::file_url(&archive_path);
+    let mut manifest = tests_support::manifest_with_github_source(
+        "ripgrep",
+        "14.0.0",
+        "BurntSushi/ripgrep",
+        "stable",
+    );
+    manifest
+        .source
+        .as_mut()
+        .unwrap()
+        .github
+        .as_mut()
+        .unwrap()
+        .platform
+        .insert(
+            current_platform.clone(),
+            GitHubPlatformSelection {
+                asset: archive_name.clone(),
+                binaries: vec!["bin/rg".to_string()],
+            },
+        );
+    manifest
+        .platform
+        .get_mut(&current_platform)
+        .unwrap()
+        .binaries = vec!["bin/rg".to_string()];
+    fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
+    fs::write(
+        paths.manifest_dirs[0].join("ripgrep.toml"),
+        manifest.to_toml().unwrap(),
+    )
+    .unwrap();
+    let before = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
+    let prompts = tests_support::ScriptedSyncPrompts::new(&["", " , "]);
+    let server = tests_support::spawn_github_server(vec![tests_support::release_json(
+        "v14.1.0",
+        false,
+        false,
+        vec![tests_support::asset_json(&archive_name, &archive_url)],
+    )]);
+
+    let error = sync::sync_repo_with_api_base_and_prompt(
+        &paths,
+        "BurntSushi/ripgrep",
+        server.api_base(),
+        &prompts,
+    )
+    .unwrap_err();
+
+    assert!(error.contains("binary list cannot be empty"));
+    let after = fs::read_to_string(paths.manifest_dirs[0].join("ripgrep.toml")).unwrap();
+    assert_eq!(after, before);
+}
+
+#[test]
 fn sync_leaves_existing_manifest_unchanged_when_saved_asset_is_missing_from_release() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());

@@ -5,7 +5,7 @@ use hive::{
     config::HivePaths,
     manifest::{Artifact, GitHubSource, Manifest, ManifestSource},
     state::{InstalledPackage, StateStore},
-    sync::SyncPrompts,
+    sync::{PromptInput, SyncPrompts},
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -47,8 +47,13 @@ impl SyncPrompts for ScriptedSyncPrompts {
         _repo: &str,
         _release_tag: &str,
         _assets: &[String],
-    ) -> Result<String, String> {
-        self.next_answer("select_asset")
+    ) -> Result<PromptInput<String>, String> {
+        let answer = self.next_answer("select_asset")?;
+        let trimmed = answer.trim();
+        if trimmed.is_empty() {
+            return Ok(PromptInput::Default);
+        }
+        Ok(PromptInput::Value(trimmed.to_string()))
     }
 
     fn input_binaries(
@@ -56,14 +61,21 @@ impl SyncPrompts for ScriptedSyncPrompts {
         _package: &str,
         _asset_name: &str,
         _suggested_binaries: &[String],
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<PromptInput<Vec<String>>, String> {
         let answer = self.next_answer("input_binaries")?;
-        Ok(answer
+        if answer.trim().is_empty() {
+            return Ok(PromptInput::Default);
+        }
+        let binaries = answer
             .split(',')
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToString::to_string)
-            .collect())
+            .collect::<Vec<_>>();
+        if binaries.is_empty() {
+            return Err("binary list cannot be empty".to_string());
+        }
+        Ok(PromptInput::Value(binaries))
     }
 }
 
