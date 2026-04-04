@@ -212,14 +212,19 @@ fn resolve_current_platform_selection(
         .unwrap_or_else(|| vec![package.to_string()]);
     let selected_asset = match prompts {
         Some(prompts) => {
-            let asset_names =
-                current_platform_prompt_assets(release, current_platform, current_platform_key)?;
-            resolve_prompted_asset_name(
+            let asset_names = installable_release_assets(release)?;
+            let selected_asset = resolve_prompted_asset_name(
                 current_platform_key,
                 &asset_names,
                 prompts.select_asset(&source.repo, &release.tag_name, &asset_names)?,
                 default_asset.clone(),
-            )?
+            )?;
+            ensure_selected_asset_matches_current_platform(
+                &selected_asset,
+                current_platform,
+                current_platform_key,
+            )?;
+            selected_asset
         }
         None => default_asset.ok_or_else(|| {
             format!("missing GitHub asset selection for current platform `{current_platform_key}`")
@@ -362,47 +367,73 @@ fn ensure_supported_asset_name(name: &str) -> Result<(), String> {
         .ok_or_else(|| format!("selected asset `{name}` has unsupported archive format"))
 }
 
-fn current_platform_prompt_assets(
-    release: &Release,
-    current_platform: Platform,
-    current_platform_key: &str,
-) -> Result<Vec<String>, String> {
+fn installable_release_assets(release: &Release) -> Result<Vec<String>, String> {
     let assets = release
         .assets
         .iter()
-        .filter(|asset| is_current_platform_prompt_asset(&asset.name, current_platform))
+        .filter(|asset| archive_kind_from_name(&asset.name).is_some())
         .map(|asset| asset.name.clone())
         .collect::<Vec<_>>();
     if assets.is_empty() {
         return Err(format!(
-            "no release assets matched current platform `{current_platform_key}` in release `{}`",
+            "release `{}` has no installable assets",
             release.tag_name
         ));
     }
     Ok(assets)
 }
 
-fn is_current_platform_prompt_asset(name: &str, current_platform: Platform) -> bool {
-    if archive_kind_from_name(name).is_none() {
-        return false;
+fn ensure_selected_asset_matches_current_platform(
+    selected_asset: &str,
+    current_platform: Platform,
+    current_platform_key: &str,
+) -> Result<(), String> {
+    if let Some(detected_platform) = detect_supported_platform_from_asset_name(selected_asset) {
+        if detected_platform != current_platform {
+            return Err(format!(
+                "selected asset `{selected_asset}` does not match current platform `{current_platform_key}`"
+            ));
+        }
     }
+    Ok(())
+}
 
+fn detect_supported_platform_from_asset_name(name: &str) -> Option<Platform> {
     let name = name.to_ascii_lowercase();
-    let (os_tokens, arch_tokens) = match current_platform {
-        Platform::LinuxX86_64 => (&["linux"][..], &["x86_64", "amd64", "x64"][..]),
-        Platform::LinuxAarch64 => (&["linux"][..], &["aarch64", "arm64"][..]),
-        Platform::MacosX86_64 => (
-            &["macos", "darwin", "apple", "osx"][..],
-            &["x86_64", "amd64", "x64"][..],
-        ),
-        Platform::MacosAarch64 => (
-            &["macos", "darwin", "apple", "osx"][..],
-            &["aarch64", "arm64"][..],
-        ),
-    };
+    let matches = [
+        Platform::LinuxX86_64,
+        Platform::LinuxAarch64,
+        Platform::MacosX86_64,
+        Platform::MacosAarch64,
+    ]
+    .into_iter()
+    .filter(|platform| asset_name_matches_platform(&name, *platform))
+    .collect::<Vec<_>>();
 
+    match matches.as_slice() {
+        [platform] => Some(*platform),
+        _ => None,
+    }
+}
+
+fn asset_name_matches_platform(name: &str, platform: Platform) -> bool {
+    let (os_tokens, arch_tokens) = platform_detection_tokens(platform);
     os_tokens.iter().any(|token| name.contains(token))
         && arch_tokens.iter().any(|token| name.contains(token))
+}
+
+fn platform_detection_tokens(
+    platform: Platform,
+) -> (&'static [&'static str], &'static [&'static str]) {
+    match platform {
+        Platform::LinuxX86_64 => (&["linux"], &["x86_64", "amd64", "x64"]),
+        Platform::LinuxAarch64 => (&["linux"], &["aarch64", "arm64"]),
+        Platform::MacosX86_64 => (
+            &["macos", "darwin", "apple", "osx"],
+            &["x86_64", "amd64", "x64"],
+        ),
+        Platform::MacosAarch64 => (&["macos", "darwin", "apple", "osx"], &["aarch64", "arm64"]),
+    }
 }
 
 fn archive_kind_from_name(name: &str) -> Option<&'static str> {
