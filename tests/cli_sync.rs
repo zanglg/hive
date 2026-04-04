@@ -334,6 +334,36 @@ fn sync_allows_generic_supported_archive_for_current_platform_sync() {
 }
 
 #[test]
+fn sync_treats_substring_collision_asset_name_as_generic_for_current_platform_sync() {
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let generic_archive_name = match tests_support::current_platform_key() {
+        "linux-x86_64" | "macos-x86_64" => "pineapple-1.0.0-arm64.tar.gz",
+        "linux-aarch64" | "macos-aarch64" => "pineapple-1.0.0-x86_64.tar.gz",
+        _ => panic!("unsupported test host"),
+    };
+    let generic_archive_path =
+        tests_support::write_named_tar_gz(temp.path(), generic_archive_name, "nvim");
+    let prompts = tests_support::ScriptedSyncPrompts::new(&["1", "bin/nvim"]);
+    let server = tests_support::spawn_github_server(vec![tests_support::release_json(
+        "v1.0.0",
+        false,
+        false,
+        vec![tests_support::asset_json(
+            generic_archive_name,
+            &tests_support::file_url(&generic_archive_path),
+        )],
+    )]);
+
+    sync::sync_repo_with_api_base_and_prompt(&paths, "neovim/neovim", server.api_base(), &prompts)
+        .unwrap();
+
+    let manifest = fs::read_to_string(paths.manifest_dirs[0].join("neovim.toml")).unwrap();
+    assert!(manifest.contains(&format!("asset = \"{generic_archive_name}\"")));
+    assert!(manifest.contains("binaries = [\"bin/nvim\"]"));
+}
+
+#[test]
 fn cli_sync_routes_through_terminal_prompts_for_current_platform() {
     let _env = tests_support::lock_env();
     let temp = tempdir().unwrap();

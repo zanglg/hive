@@ -6,7 +6,11 @@ use crate::{
     proxy,
 };
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::PathBuf,
+};
 
 const DEFAULT_GITHUB_API_BASE: &str = "https://api.github.com";
 
@@ -399,7 +403,7 @@ fn ensure_selected_asset_matches_current_platform(
 }
 
 fn detect_supported_platform_from_asset_name(name: &str) -> Option<Platform> {
-    let name = name.to_ascii_lowercase();
+    let tokens = normalized_asset_tokens(name);
     let matches = [
         Platform::LinuxX86_64,
         Platform::LinuxAarch64,
@@ -407,7 +411,7 @@ fn detect_supported_platform_from_asset_name(name: &str) -> Option<Platform> {
         Platform::MacosAarch64,
     ]
     .into_iter()
-    .filter(|platform| asset_name_matches_platform(&name, *platform))
+    .filter(|platform| asset_name_matches_platform(&tokens, *platform))
     .collect::<Vec<_>>();
 
     match matches.as_slice() {
@@ -416,21 +420,40 @@ fn detect_supported_platform_from_asset_name(name: &str) -> Option<Platform> {
     }
 }
 
-fn asset_name_matches_platform(name: &str, platform: Platform) -> bool {
+fn asset_name_matches_platform(tokens: &BTreeSet<String>, platform: Platform) -> bool {
     let (os_tokens, arch_tokens) = platform_detection_tokens(platform);
-    os_tokens.iter().any(|token| name.contains(token))
-        && arch_tokens.iter().any(|token| name.contains(token))
+    os_tokens.iter().any(|token| tokens.contains(*token))
+        && arch_tokens.iter().any(|token| tokens.contains(*token))
+}
+
+fn normalized_asset_tokens(name: &str) -> BTreeSet<String> {
+    let tokens = name
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(|token| token.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let mut normalized = BTreeSet::new();
+
+    for token in &tokens {
+        normalized.insert(token.clone());
+    }
+
+    for pair in tokens.windows(2) {
+        normalized.insert(format!("{}{}", pair[0], pair[1]));
+    }
+
+    normalized
 }
 
 fn platform_detection_tokens(
     platform: Platform,
 ) -> (&'static [&'static str], &'static [&'static str]) {
     match platform {
-        Platform::LinuxX86_64 => (&["linux"], &["x86_64", "amd64", "x64"]),
+        Platform::LinuxX86_64 => (&["linux"], &["x8664", "amd64", "x64"]),
         Platform::LinuxAarch64 => (&["linux"], &["aarch64", "arm64"]),
         Platform::MacosX86_64 => (
             &["macos", "darwin", "apple", "osx"],
-            &["x86_64", "amd64", "x64"],
+            &["x8664", "amd64", "x64"],
         ),
         Platform::MacosAarch64 => (&["macos", "darwin", "apple", "osx"], &["aarch64", "arm64"]),
     }
