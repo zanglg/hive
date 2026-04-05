@@ -553,7 +553,7 @@ fn resolve_selected_binaries(
     let candidates = crate::installer::list_executable_candidates(install_dir)?;
     if candidates.is_empty() {
         return Err(format!(
-            "manifest is missing binaries for the current platform `{current_platform}`, and no executable candidates were found"
+            "manifest is missing binaries for the current platform `{current_platform}`, and no executable candidates found"
         ));
     }
 

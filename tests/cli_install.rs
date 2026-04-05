@@ -3,7 +3,7 @@ mod tests_support;
 
 use clap::Parser;
 use hive::{
-    app,
+    app::{self, InstallPrompts},
     cli::{Cli, Commands},
     config::HivePaths,
     installer::{ArchiveKind, Installer},
@@ -595,6 +595,76 @@ fn install_prompts_for_missing_binaries_and_persists_selection() {
     let manifest = fs::read_to_string(paths.manifest_dirs[0].join("rg.toml")).unwrap();
     assert!(manifest.contains("binaries = [\"bin/rg\"]"));
     assert!(paths.package_store.join("rg/14.1.0/bin/rg").exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn install_fails_when_missing_binaries_archive_has_no_executable_candidates() {
+    let _env = tests_support::lock_env();
+    unsafe {
+        std::env::remove_var("HIVE_HTTP_PROXY");
+        std::env::remove_var("HIVE_INSECURE_SSL");
+    }
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let archive_path = temp.path().join("rg.tar.gz");
+    let source_dir = temp.path().join("source");
+    fs::create_dir_all(&source_dir).unwrap();
+    fs::write(source_dir.join("README"), "docs").unwrap();
+    tests_support::write_tar_gz(&archive_path, &source_dir, "README");
+    let checksum = format!("sha256:{:x}", Sha256::digest(fs::read(&archive_path).unwrap()));
+    let current = tests_support::current_platform_key();
+    fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
+    fs::write(
+        paths.manifest_dirs[0].join("rg.toml"),
+        format!(
+            "name = \"rg\"\nversion = \"14.1.0\"\n\n[platform.{current}]\nurl = \"file://{}\"\nchecksum = \"{checksum}\"\narchive = \"tar.gz\"\nbinaries = []\n",
+            archive_path.display()
+        ),
+    )
+    .unwrap();
+
+    let prompts = tests_support::ScriptedInstallPrompts::new(&["1"]);
+    let error = app::install_package_with_prompts(&paths, "rg", &prompts).unwrap_err();
+
+    assert!(error.contains("no executable candidates found"));
+    assert!(fs::read_to_string(paths.manifest_dirs[0].join("rg.toml"))
+        .unwrap()
+        .contains("binaries = []"));
+    assert!(!paths.package_store.join("rg/14.1.0").exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn install_fails_when_missing_binaries_selection_is_empty() {
+    let _env = tests_support::lock_env();
+    unsafe {
+        std::env::remove_var("HIVE_HTTP_PROXY");
+        std::env::remove_var("HIVE_INSECURE_SSL");
+    }
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_install_fixture_without_binaries(&paths, "rg", "14.1.0", &["bin/rg"]);
+
+    struct EmptySelectionPrompts;
+
+    impl InstallPrompts for EmptySelectionPrompts {
+        fn select_binaries(
+            &self,
+            _package: &str,
+            _candidates: &[String],
+        ) -> Result<Vec<String>, String> {
+            Ok(vec![])
+        }
+    }
+
+    let prompts = EmptySelectionPrompts;
+    let error = app::install_package_with_prompts(&paths, "rg", &prompts).unwrap_err();
+
+    assert!(error.contains("binary selection cannot be empty"));
+    assert!(fs::read_to_string(paths.manifest_dirs[0].join("rg.toml"))
+        .unwrap()
+        .contains("binaries = []"));
 }
 
 #[test]
