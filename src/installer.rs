@@ -4,6 +4,9 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveKind {
     TarGz,
@@ -110,6 +113,14 @@ impl Installer {
     }
 }
 
+#[cfg(unix)]
+pub fn list_executable_candidates(root: &Path) -> Result<Vec<String>, String> {
+    let mut candidates = Vec::new();
+    collect_executable_candidates(root, root, &mut candidates)?;
+    candidates.sort();
+    Ok(candidates)
+}
+
 fn normalize_extracted_layout(temp_dir: &Path, declared_binaries: &[String]) -> Result<(), String> {
     let mut entries = fs::read_dir(temp_dir)
         .map_err(|error| format!("failed to inspect {}: {error}", temp_dir.display()))?
@@ -205,4 +216,52 @@ fn binaries_exist_under(dir: &Path, declared_binaries: &[String]) -> Result<bool
     }
 
     Ok(true)
+}
+
+fn collect_executable_candidates(
+    root: &Path,
+    current: &Path,
+    candidates: &mut Vec<String>,
+) -> Result<(), String> {
+    let entries = fs::read_dir(current)
+        .map_err(|error| format!("failed to inspect {}: {error}", current.display()))?;
+
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("failed to inspect {}: {error}", current.display()))?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
+
+        if metadata.file_type().is_dir() {
+            collect_executable_candidates(root, &path, candidates)?;
+            continue;
+        }
+
+        if !metadata.file_type().is_file() {
+            continue;
+        }
+
+        if !is_executable_regular_file(&metadata) {
+            continue;
+        }
+
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|error| format!("failed to relativize {}: {error}", path.display()))?;
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        candidates.push(relative);
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn is_executable_regular_file(metadata: &fs::Metadata) -> bool {
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable_regular_file(_metadata: &fs::Metadata) -> bool {
+    false
 }

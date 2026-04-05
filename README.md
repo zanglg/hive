@@ -53,6 +53,8 @@ Install a package by manifest name:
 hive install rg
 ```
 
+If the manifest omits binaries for the current platform, `hive install` extracts the archive, lists executable candidates, prompts you to choose one or more, and writes those paths back into the manifest.
+
 List installed versions and mark the active one with `*`:
 
 ```bash

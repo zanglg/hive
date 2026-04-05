@@ -58,7 +58,7 @@ pub fn run_with_paths(cli: Cli, paths: HivePaths) -> Result<(), String> {
 pub fn run_capture(cli: Cli, paths: HivePaths) -> Result<String, String> {
     match cli.command {
         Commands::Install { package } => {
-            install_package(&paths, &package)?;
+            install_package_impl(&paths, &package, None)?;
             Ok(String::new())
         }
         Commands::List => list_packages(&paths),
@@ -87,6 +87,15 @@ struct TerminalSyncPrompts<R, W> {
     output: RefCell<W>,
 }
 
+pub trait InstallPrompts {
+    fn select_binaries(&self, package: &str, candidates: &[String]) -> Result<Vec<String>, String>;
+}
+
+struct TerminalInstallPrompts<R, W> {
+    input: RefCell<R>,
+    output: RefCell<W>,
+}
+
 impl<R, W> TerminalSyncPrompts<R, W> {
     fn new(input: R, output: W) -> Self {
         Self {
@@ -96,7 +105,27 @@ impl<R, W> TerminalSyncPrompts<R, W> {
     }
 }
 
+impl<R, W> TerminalInstallPrompts<R, W> {
+    fn new(input: R, output: W) -> Self {
+        Self {
+            input: RefCell::new(input),
+            output: RefCell::new(output),
+        }
+    }
+}
+
 impl<R: BufRead, W: Write> TerminalSyncPrompts<R, W> {
+    fn read_line(&self, prompt_name: &str) -> Result<String, String> {
+        let mut line = String::new();
+        self.input
+            .borrow_mut()
+            .read_line(&mut line)
+            .map_err(|error| format!("failed to read {prompt_name}: {error}"))?;
+        Ok(line.trim().to_string())
+    }
+}
+
+impl<R: BufRead, W: Write> TerminalInstallPrompts<R, W> {
     fn read_line(&self, prompt_name: &str) -> Result<String, String> {
         let mut line = String::new();
         self.input
@@ -176,6 +205,63 @@ impl<R: BufRead, W: Write> sync::SyncPrompts for TerminalSyncPrompts<R, W> {
     }
 }
 
+impl<R: BufRead, W: Write> InstallPrompts for TerminalInstallPrompts<R, W> {
+    fn select_binaries(&self, package: &str, candidates: &[String]) -> Result<Vec<String>, String> {
+        {
+            let mut output = self.output.borrow_mut();
+            writeln!(
+                output,
+                "Select binaries for package `{package}` (comma-separated numbers):"
+            )
+            .map_err(|error| format!("failed to write prompt: {error}"))?;
+            for (index, candidate) in candidates.iter().enumerate() {
+                writeln!(output, "{}. {}", index + 1, candidate)
+                    .map_err(|error| format!("failed to write prompt: {error}"))?;
+            }
+            write!(output, "Selection: ")
+                .map_err(|error| format!("failed to write prompt: {error}"))?;
+            output
+                .flush()
+                .map_err(|error| format!("failed to flush prompt: {error}"))?;
+        }
+
+        let selection = self.read_line("binary selection")?;
+        if selection.is_empty() {
+            return Err("binary selection cannot be empty".to_string());
+        }
+
+        let mut selected = Vec::new();
+        for token in selection.split(',') {
+            let index = token.trim();
+            if index.is_empty() {
+                return Err("binary selection cannot be empty".to_string());
+            }
+
+            let candidate = index
+                .parse::<usize>()
+                .ok()
+                .and_then(|value| value.checked_sub(1))
+                .and_then(|value| candidates.get(value))
+                .cloned();
+
+            match candidate {
+                Some(candidate) => {
+                    if !selected.contains(&candidate) {
+                        selected.push(candidate);
+                    }
+                }
+                None => return Err(format!("selected binary `{index}` was not found")),
+            }
+        }
+
+        if selected.is_empty() {
+            return Err("binary selection cannot be empty".to_string());
+        }
+
+        Ok(selected)
+    }
+}
+
 fn sync_repo_interactive(paths: &HivePaths, repo: &str) -> Result<(), String> {
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -209,23 +295,105 @@ fn default_paths() -> Result<HivePaths, String> {
 }
 
 fn install_package(paths: &HivePaths, package: &str) -> Result<(), String> {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let prompts = TerminalInstallPrompts::new(stdin.lock(), stdout.lock());
+    install_package_impl(paths, package, Some(&prompts))
+}
+
+pub fn install_package_with_prompts(
+    paths: &HivePaths,
+    package: &str,
+    prompts: &dyn InstallPrompts,
+) -> Result<(), String> {
+    install_package_impl(paths, package, Some(prompts))
+}
+
+fn install_package_impl(
+    paths: &HivePaths,
+    package: &str,
+    prompts: Option<&dyn InstallPrompts>,
+) -> Result<(), String> {
     let repo = ManifestRepository::new(paths.manifest_dirs.clone());
-    let (_, manifest) = repo.load(package)?;
+    let (manifest_path, mut manifest) = repo.load(package)?;
     let platform = Platform::current()?;
-    let artifact = manifest.artifact_for(platform)?.clone();
+    let current_platform = platform.to_string();
+    let mut artifact = manifest.artifact_for(platform)?.clone();
+    let uses_missing_binaries_fallback = artifact.binaries.is_empty();
+    let original_manifest_contents = if uses_missing_binaries_fallback {
+        Some(
+            fs::read_to_string(&manifest_path)
+                .map_err(|error| format!("failed to read {}: {error}", manifest_path.display()))?,
+        )
+    } else {
+        None
+    };
+    if uses_missing_binaries_fallback && prompts.is_none() {
+        return Err(format!(
+            "manifest is missing binaries for the current platform `{current_platform}`"
+        ));
+    }
     let archive_kind = ArchiveKind::parse(&artifact.archive)?;
     let http = proxy::build_http_client()?;
 
     let download_path = download_to_cache(&http, paths, &artifact.url, package, &manifest.version)?;
     let installer = Installer::new(paths.package_store.clone());
-    let install_dir = installer.install_archive(
+    let version_install_dir = paths.package_store.join(package).join(&manifest.version);
+    let install_backup = if uses_missing_binaries_fallback {
+        backup_existing_install_dir(&version_install_dir)?
+    } else {
+        None
+    };
+    let install_dir = match installer.install_archive(
         &manifest.name,
         &manifest.version,
         &download_path,
         &artifact.checksum,
         archive_kind,
         &artifact.binaries,
-    )?;
+    ) {
+        Ok(install_dir) => install_dir,
+        Err(error) => {
+            if uses_missing_binaries_fallback {
+                restore_install_backup(&version_install_dir, install_backup.as_deref())?;
+            }
+            return Err(error);
+        }
+    };
+    let mut manifest_persisted = false;
+
+    if uses_missing_binaries_fallback {
+        let selected_binaries = resolve_selected_binaries(
+            package,
+            prompts,
+            &install_dir,
+            &current_platform,
+        )
+        .and_then(|selected_binaries| {
+            persist_selected_binaries(
+                &manifest_path,
+                &mut manifest,
+                &current_platform,
+                &selected_binaries,
+            )?;
+            manifest_persisted = true;
+            Ok(selected_binaries)
+        });
+
+        match selected_binaries {
+            Ok(selected_binaries) => artifact.binaries = selected_binaries,
+            Err(error) => {
+                rollback_missing_binaries_early_failure(
+                    &install_dir,
+                    install_backup.as_deref(),
+                    &manifest_path,
+                    original_manifest_contents.as_deref(),
+                    manifest_persisted,
+                )?;
+                return Err(error);
+            }
+        }
+    }
 
     let exported = match artifact
         .binaries
@@ -243,7 +411,15 @@ fn install_package(paths: &HivePaths, package: &str) -> Result<(), String> {
     {
         Ok(value) => value,
         Err(error) => {
-            if install_dir.exists() {
+            if uses_missing_binaries_fallback {
+                rollback_missing_binaries_early_failure(
+                    &install_dir,
+                    install_backup.as_deref(),
+                    &manifest_path,
+                    original_manifest_contents.as_deref(),
+                    manifest_persisted,
+                )?;
+            } else if install_dir.exists() {
                 fs::remove_dir_all(&install_dir).map_err(|remove_error| {
                     format!("failed to clean {}: {remove_error}", install_dir.display())
                 })?;
@@ -276,8 +452,29 @@ fn install_package(paths: &HivePaths, package: &str) -> Result<(), String> {
 
     if state.active.is_none() {
         let (active_targets, desired_names) =
-            export_targets_through_current(&current_dir, &exported)?;
-        activate_version(&paths.shim_dir, &active_targets)?;
+            match export_targets_through_current(&current_dir, &exported) {
+                Ok(value) => value,
+                Err(error) => {
+                    rollback_missing_binaries_late_failure(
+                        &install_dir,
+                        install_backup.as_deref(),
+                        &manifest_path,
+                        original_manifest_contents.as_deref(),
+                        manifest_persisted,
+                    )?;
+                    return Err(error);
+                }
+            };
+        if let Err(error) = activate_version(&paths.shim_dir, &active_targets) {
+            rollback_missing_binaries_late_failure(
+                &install_dir,
+                install_backup.as_deref(),
+                &manifest_path,
+                original_manifest_contents.as_deref(),
+                manifest_persisted,
+            )?;
+            return Err(error);
+        }
         state.active = Some(manifest.version.clone());
         if let Err(error) = store.save_package(&state) {
             let _ = rollback_activation_after_state_failure(
@@ -286,6 +483,13 @@ fn install_package(paths: &HivePaths, package: &str) -> Result<(), String> {
                 &exported,
                 &desired_names,
             );
+            rollback_missing_binaries_late_failure(
+                &install_dir,
+                install_backup.as_deref(),
+                &manifest_path,
+                original_manifest_contents.as_deref(),
+                manifest_persisted,
+            )?;
             return Err(error);
         }
         if let Err(error) = set_package_current(&current_dir, &install_dir) {
@@ -293,6 +497,13 @@ fn install_package(paths: &HivePaths, package: &str) -> Result<(), String> {
             if previous_current.is_none() {
                 let _ = remove_shims_by_names(&paths.shim_dir, &desired_names);
             }
+            rollback_missing_binaries_late_failure(
+                &install_dir,
+                install_backup.as_deref(),
+                &manifest_path,
+                original_manifest_contents.as_deref(),
+                manifest_persisted,
+            )?;
             return Err(error);
         }
         if let Err(error) =
@@ -303,12 +514,237 @@ fn install_package(paths: &HivePaths, package: &str) -> Result<(), String> {
                 let _ = remove_shims_by_names(&paths.shim_dir, &desired_names);
             }
             let _ = store.save_package(&previous_state);
+            rollback_missing_binaries_late_failure(
+                &install_dir,
+                install_backup.as_deref(),
+                &manifest_path,
+                original_manifest_contents.as_deref(),
+                manifest_persisted,
+            )?;
             return Err(error);
         }
+        discard_install_backup(install_backup.as_deref())?;
         return Ok(());
     }
 
-    store.save_package(&state)
+    if let Err(error) = store.save_package(&state) {
+        rollback_missing_binaries_late_failure(
+            &install_dir,
+            install_backup.as_deref(),
+            &manifest_path,
+            original_manifest_contents.as_deref(),
+            manifest_persisted,
+        )?;
+        return Err(error);
+    }
+    discard_install_backup(install_backup.as_deref())?;
+    Ok(())
+}
+
+fn resolve_selected_binaries(
+    package: &str,
+    prompts: Option<&dyn InstallPrompts>,
+    install_dir: &Path,
+    current_platform: &str,
+) -> Result<Vec<String>, String> {
+    let prompts = prompts.ok_or_else(|| {
+        format!("manifest is missing binaries for the current platform `{current_platform}`")
+    })?;
+    let candidates = crate::installer::list_executable_candidates(install_dir)?;
+    if candidates.is_empty() {
+        return Err(format!(
+            "manifest is missing binaries for the current platform `{current_platform}`, and no executable candidates found"
+        ));
+    }
+
+    let selected = prompts.select_binaries(package, &candidates)?;
+    if selected.is_empty() {
+        return Err("binary selection cannot be empty".to_string());
+    }
+
+    Ok(selected)
+}
+
+fn persist_selected_binaries(
+    manifest_path: &Path,
+    manifest: &mut crate::manifest::Manifest,
+    current_platform: &str,
+    binaries: &[String],
+) -> Result<(), String> {
+    manifest.set_binaries_for_platform(current_platform, binaries.to_vec())?;
+
+    if let Some(github) = manifest
+        .source
+        .as_mut()
+        .and_then(|source| source.github.as_mut())
+    {
+        if let Some(selection) = github.platform.get_mut(current_platform) {
+            selection.binaries = binaries.to_vec();
+        }
+    }
+
+    atomic_write_file(
+        manifest_path,
+        &manifest.to_toml()?,
+        "failed to write",
+    )
+}
+
+fn backup_existing_install_dir(install_dir: &Path) -> Result<Option<PathBuf>, String> {
+    if !install_dir.exists() {
+        return Ok(None);
+    }
+
+    let backup_name = format!(
+        "{}.install-backup",
+        install_dir
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| format!("invalid install path `{}`", install_dir.display()))?
+    );
+    let backup_path = install_dir.with_file_name(backup_name);
+    if backup_path.exists() {
+        return Err(format!(
+            "pre-existing install backup is blocking install: {}",
+            backup_path.display()
+        ));
+    }
+    fs::rename(install_dir, &backup_path)
+        .map_err(|error| format!("failed to move {} aside: {error}", install_dir.display()))?;
+    Ok(Some(backup_path))
+}
+
+fn restore_install_backup(install_dir: &Path, install_backup: Option<&Path>) -> Result<(), String> {
+    let Some(install_backup) = install_backup else {
+        return Ok(());
+    };
+
+    if install_dir.exists() {
+        fs::remove_dir_all(install_dir)
+            .map_err(|error| format!("failed to clean {}: {error}", install_dir.display()))?;
+    }
+    fs::rename(install_backup, install_dir)
+        .map_err(|error| format!("failed to restore {}: {error}", install_dir.display()))
+}
+
+fn discard_install_backup(install_backup: Option<&Path>) -> Result<(), String> {
+    let Some(install_backup) = install_backup else {
+        return Ok(());
+    };
+
+    if install_backup.exists() {
+        fs::remove_dir_all(install_backup)
+            .map_err(|error| format!("failed to remove {}: {error}", install_backup.display()))?;
+    }
+    Ok(())
+}
+
+fn restore_manifest_contents(manifest_path: &Path, original_manifest: Option<&str>) -> Result<(), String> {
+    let Some(original_manifest) = original_manifest else {
+        return Ok(());
+    };
+
+    atomic_write_file(manifest_path, original_manifest, "failed to restore")
+}
+
+fn atomic_write_file(path: &Path, contents: &str, error_verb: &str) -> Result<(), String> {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| format!("invalid file path `{}`", path.display()))?;
+    let parent_dir = path
+        .parent()
+        .ok_or_else(|| format!("invalid file path `{}`", path.display()))?;
+    let temp_path = path.with_file_name(format!(
+        ".{file_name}.tmp.{}",
+        std::process::id()
+    ));
+
+    let write_result = (|| -> Result<(), String> {
+        let mut file = fs::File::create(&temp_path)
+            .map_err(|error| format!("{error_verb} {}: {error}", path.display()))?;
+        file.write_all(contents.as_bytes())
+            .map_err(|error| format!("{error_verb} {}: {error}", path.display()))?;
+        file.sync_all()
+            .map_err(|error| format!("{error_verb} {}: {error}", path.display()))?;
+        fs::rename(&temp_path, path)
+            .map_err(|error| format!("{error_verb} {}: {error}", path.display()))?;
+        fs::File::open(parent_dir)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|error| format!("{error_verb} {}: {error}", path.display()))
+    })();
+
+    if write_result.is_err() && temp_path.exists() {
+        let _ = fs::remove_file(&temp_path);
+    }
+
+    write_result
+}
+
+fn rollback_missing_binaries_early_failure(
+    install_dir: &Path,
+    install_backup: Option<&Path>,
+    manifest_path: &Path,
+    original_manifest: Option<&str>,
+    manifest_persisted: bool,
+) -> Result<(), String> {
+    let mut rollback_errors = Vec::new();
+
+    if install_dir.exists() {
+        if let Err(error) = fs::remove_dir_all(install_dir)
+            .map_err(|error| format!("failed to clean {}: {error}", install_dir.display()))
+        {
+            rollback_errors.push(error);
+        }
+    }
+    if manifest_persisted {
+        if let Err(error) = restore_manifest_contents(manifest_path, original_manifest) {
+            rollback_errors.push(error);
+        }
+    }
+    if let Err(error) = restore_install_backup(install_dir, install_backup) {
+        rollback_errors.push(error);
+    }
+
+    if rollback_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(rollback_errors.join("; "))
+    }
+}
+
+fn rollback_missing_binaries_late_failure(
+    install_dir: &Path,
+    install_backup: Option<&Path>,
+    manifest_path: &Path,
+    original_manifest: Option<&str>,
+    manifest_persisted: bool,
+) -> Result<(), String> {
+    let mut rollback_errors = Vec::new();
+
+    if manifest_persisted {
+        if let Err(error) = restore_manifest_contents(manifest_path, original_manifest) {
+            rollback_errors.push(error);
+        }
+    }
+    let install_result = if install_backup.is_some() {
+        restore_install_backup(install_dir, install_backup)
+    } else if install_dir.exists() {
+        fs::remove_dir_all(install_dir)
+            .map_err(|error| format!("failed to clean {}: {error}", install_dir.display()))
+    } else {
+        Ok(())
+    };
+
+    if let Err(error) = install_result {
+        rollback_errors.push(error);
+    }
+
+    if rollback_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(rollback_errors.join("; "))
+    }
 }
 
 fn use_package(paths: &HivePaths, package: &str, version: &str) -> Result<(), String> {
