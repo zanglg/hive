@@ -578,6 +578,233 @@ fn install_command_resolves_manifest_and_activates_first_version() {
 }
 
 #[test]
+#[cfg(unix)]
+fn install_prompts_for_missing_binaries_and_persists_selection() {
+    let _env = tests_support::lock_env();
+    unsafe {
+        std::env::remove_var("HIVE_HTTP_PROXY");
+        std::env::remove_var("HIVE_INSECURE_SSL");
+    }
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_install_fixture_without_binaries(&paths, "rg", "14.1.0", &["bin/rg"]);
+
+    let prompts = tests_support::ScriptedInstallPrompts::new(&["1"]);
+    app::install_package_with_prompts(&paths, "rg", &prompts).unwrap();
+
+    let manifest = fs::read_to_string(paths.manifest_dirs[0].join("rg.toml")).unwrap();
+    assert!(manifest.contains("binaries = [\"bin/rg\"]"));
+    assert!(paths.package_store.join("rg/14.1.0/bin/rg").exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn install_preserves_other_platform_artifacts_when_persisting_selected_binaries() {
+    let _env = tests_support::lock_env();
+    unsafe {
+        std::env::remove_var("HIVE_HTTP_PROXY");
+        std::env::remove_var("HIVE_INSECURE_SSL");
+    }
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let current = tests_support::current_platform_key();
+    let other = tests_support::alternate_platform_key();
+    let archive_path = temp.path().join("rg.tar.gz");
+    let source_dir = temp.path().join("source");
+    write_file_with_mode(&source_dir.join("bin/rg"), b"rg", 0o755);
+    tests_support::write_tar_gz_files(&archive_path, &[(source_dir.join("bin/rg").as_path(), "bin/rg")]);
+    let checksum = format!("sha256:{:x}", Sha256::digest(fs::read(&archive_path).unwrap()));
+    fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
+    fs::write(
+        paths.manifest_dirs[0].join("rg.toml"),
+        format!(
+            "name = \"rg\"\nversion = \"14.1.0\"\n\n[platform.{current}]\nurl = \"file://{}\"\nchecksum = \"{checksum}\"\narchive = \"tar.gz\"\nbinaries = []\n\n[platform.{other}]\nurl = \"https://example.invalid/other.tar.gz\"\nchecksum = \"sha256:other\"\narchive = \"tar.gz\"\nbinaries = [\"other-bin\"]\n",
+            archive_path.display()
+        ),
+    )
+    .unwrap();
+
+    let prompts = tests_support::ScriptedInstallPrompts::new(&["1"]);
+    app::install_package_with_prompts(&paths, "rg", &prompts).unwrap();
+
+    let manifest =
+        Manifest::from_toml(&fs::read_to_string(paths.manifest_dirs[0].join("rg.toml")).unwrap())
+            .unwrap();
+    assert_eq!(
+        manifest.platform.get(current).unwrap().binaries,
+        vec!["bin/rg"]
+    );
+    assert_eq!(
+        manifest.platform.get(other).unwrap().binaries,
+        vec!["other-bin"]
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn install_keeps_follow_up_runs_noninteractive_after_persisting_binaries() {
+    let _env = tests_support::lock_env();
+    unsafe {
+        std::env::remove_var("HIVE_HTTP_PROXY");
+        std::env::remove_var("HIVE_INSECURE_SSL");
+    }
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_install_fixture_without_binaries(&paths, "rg", "14.1.0", &["bin/rg"]);
+
+    let prompts = tests_support::ScriptedInstallPrompts::new(&["1"]);
+    app::install_package_with_prompts(&paths, "rg", &prompts).unwrap();
+
+    let cli = Cli::try_parse_from(["hive", "install", "rg"]).unwrap();
+    app::run_with_paths(cli, paths.clone()).unwrap();
+
+    assert_eq!(
+        fs::read_link(paths.shim_dir.join("rg")).unwrap(),
+        paths.package_store.join("rg/current/bin/rg")
+    );
+    let manifest = fs::read_to_string(paths.manifest_dirs[0].join("rg.toml")).unwrap();
+    assert!(manifest.contains("binaries = [\"bin/rg\"]"));
+}
+
+#[test]
+#[cfg(unix)]
+fn install_updates_existing_github_platform_binaries_when_persisting_selection() {
+    let _env = tests_support::lock_env();
+    unsafe {
+        std::env::remove_var("HIVE_HTTP_PROXY");
+        std::env::remove_var("HIVE_INSECURE_SSL");
+    }
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    let current = tests_support::current_platform_key();
+    let other = tests_support::alternate_platform_key();
+    let archive_path = temp.path().join("rg.tar.gz");
+    let source_dir = temp.path().join("source");
+    write_file_with_mode(&source_dir.join("bin/rg"), b"rg", 0o755);
+    tests_support::write_tar_gz_files(&archive_path, &[(source_dir.join("bin/rg").as_path(), "bin/rg")]);
+    let checksum = format!("sha256:{:x}", Sha256::digest(fs::read(&archive_path).unwrap()));
+    fs::create_dir_all(&paths.manifest_dirs[0]).unwrap();
+    fs::write(
+        paths.manifest_dirs[0].join("rg.toml"),
+        format!(
+            "name = \"rg\"\nversion = \"14.1.0\"\n\n[source.github]\nrepo = \"BurntSushi/ripgrep\"\nchannel = \"stable\"\n\n[source.github.platform.{current}]\nasset = \"{}\"\nbinaries = [\"old-bin\"]\n\n[source.github.platform.{other}]\nasset = \"other-asset\"\nbinaries = [\"other-github-bin\"]\n\n[platform.{current}]\nurl = \"file://{}\"\nchecksum = \"{checksum}\"\narchive = \"tar.gz\"\nbinaries = []\n\n[platform.{other}]\nurl = \"https://example.invalid/other.tar.gz\"\nchecksum = \"sha256:other\"\narchive = \"tar.gz\"\nbinaries = [\"other-bin\"]\n",
+            tests_support::platform_archive_name("rg", "14.1.0"),
+            archive_path.display()
+        ),
+    )
+    .unwrap();
+
+    let prompts = tests_support::ScriptedInstallPrompts::new(&["1"]);
+    app::install_package_with_prompts(&paths, "rg", &prompts).unwrap();
+
+    let manifest =
+        Manifest::from_toml(&fs::read_to_string(paths.manifest_dirs[0].join("rg.toml")).unwrap())
+            .unwrap();
+    let github = manifest.source.unwrap().github.unwrap();
+    assert_eq!(
+        github.platform.get(current).unwrap().binaries,
+        vec!["bin/rg"]
+    );
+    assert_eq!(
+        github.platform.get(other).unwrap().binaries,
+        vec!["other-github-bin"]
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn install_noninteractive_missing_binaries_does_not_clobber_existing_same_version_dir() {
+    let _env = tests_support::lock_env();
+    unsafe {
+        std::env::remove_var("HIVE_HTTP_PROXY");
+        std::env::remove_var("HIVE_INSECURE_SSL");
+    }
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_install_fixture_without_binaries(&paths, "rg", "14.1.0", &["bin/rg"]);
+    let existing_binary = paths.package_store.join("rg/14.1.0/bin/rg");
+    write_file_with_mode(&existing_binary, b"existing-binary", 0o755);
+
+    let cli = Cli::try_parse_from(["hive", "install", "rg"]).unwrap();
+    let error = app::run_capture(cli, paths.clone()).unwrap_err();
+
+    assert!(error.contains("manifest is missing binaries for the current platform"));
+    assert_eq!(fs::read(&existing_binary).unwrap(), b"existing-binary");
+}
+
+#[test]
+#[cfg(unix)]
+fn install_restores_manifest_when_failure_happens_after_persistence() {
+    let _env = tests_support::lock_env();
+    unsafe {
+        std::env::remove_var("HIVE_HTTP_PROXY");
+        std::env::remove_var("HIVE_INSECURE_SSL");
+    }
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_install_fixture_without_binaries(&paths, "rg", "14.1.0", &["bin/rg"]);
+    let manifest_path = paths.manifest_dirs[0].join("rg.toml");
+    let original_manifest = fs::read_to_string(&manifest_path).unwrap();
+    fs::create_dir_all(paths.shim_dir.parent().unwrap()).unwrap();
+    fs::write(&paths.shim_dir, "blocker").unwrap();
+
+    let prompts = tests_support::ScriptedInstallPrompts::new(&["1"]);
+    let error = app::install_package_with_prompts(&paths, "rg", &prompts).unwrap_err();
+
+    assert!(error.contains("failed to create"));
+    assert_eq!(fs::read_to_string(&manifest_path).unwrap(), original_manifest);
+    assert!(paths.package_store.join("rg/14.1.0").symlink_metadata().is_err());
+}
+
+#[test]
+#[cfg(unix)]
+fn install_blocks_when_stale_install_backup_already_exists() {
+    let _env = tests_support::lock_env();
+    unsafe {
+        std::env::remove_var("HIVE_HTTP_PROXY");
+        std::env::remove_var("HIVE_INSECURE_SSL");
+    }
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_install_fixture_without_binaries(&paths, "rg", "14.1.0", &["bin/rg"]);
+    let existing_binary = paths.package_store.join("rg/14.1.0/bin/rg");
+    write_file_with_mode(&existing_binary, b"existing-binary", 0o755);
+    let stale_backup_binary = paths.package_store.join("rg/14.1.0.install-backup/bin/rg");
+    write_file_with_mode(&stale_backup_binary, b"stale-backup", 0o755);
+
+    let prompts = tests_support::ScriptedInstallPrompts::new(&["1"]);
+    let error = app::install_package_with_prompts(&paths, "rg", &prompts).unwrap_err();
+
+    assert!(error.contains("pre-existing install backup"));
+    assert_eq!(fs::read(&existing_binary).unwrap(), b"existing-binary");
+    assert_eq!(fs::read(&stale_backup_binary).unwrap(), b"stale-backup");
+}
+
+#[test]
+#[cfg(unix)]
+fn install_restores_existing_same_version_install_after_late_fallback_failure() {
+    let _env = tests_support::lock_env();
+    unsafe {
+        std::env::remove_var("HIVE_HTTP_PROXY");
+        std::env::remove_var("HIVE_INSECURE_SSL");
+    }
+    let temp = tempdir().unwrap();
+    let paths = tests_support::fixture_paths(temp.path());
+    tests_support::seed_install_fixture_without_binaries(&paths, "rg", "14.1.0", &["bin/rg"]);
+    let existing_binary = paths.package_store.join("rg/14.1.0/bin/rg");
+    write_file_with_mode(&existing_binary, b"existing-binary", 0o755);
+    fs::create_dir_all(paths.shim_dir.parent().unwrap()).unwrap();
+    fs::write(&paths.shim_dir, "blocker").unwrap();
+
+    let prompts = tests_support::ScriptedInstallPrompts::new(&["1"]);
+    let error = app::install_package_with_prompts(&paths, "rg", &prompts).unwrap_err();
+
+    assert!(error.contains("failed to create"));
+    assert_eq!(fs::read(&existing_binary).unwrap(), b"existing-binary");
+    assert!(paths.package_store.join("rg/14.1.0.install-backup").symlink_metadata().is_err());
+}
+
+#[test]
 fn install_command_uses_binary_basenames_for_shim_names() {
     let temp = tempdir().unwrap();
     let paths = tests_support::fixture_paths(temp.path());

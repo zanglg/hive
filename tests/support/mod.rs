@@ -2,6 +2,7 @@
 
 use flate2::{write::GzEncoder, Compression};
 use hive::{
+    app::InstallPrompts,
     config::HivePaths,
     manifest::{Artifact, GitHubSource, Manifest, ManifestSource},
     state::{InstalledPackage, StateStore},
@@ -25,7 +26,27 @@ pub struct ScriptedSyncPrompts {
     answers: Mutex<Vec<String>>,
 }
 
+pub struct ScriptedInstallPrompts {
+    answers: Mutex<Vec<String>>,
+}
+
 impl ScriptedSyncPrompts {
+    pub fn new(answers: &[&str]) -> Self {
+        Self {
+            answers: Mutex::new(answers.iter().map(|answer| (*answer).to_string()).collect()),
+        }
+    }
+
+    fn next_answer(&self, prompt: &str) -> Result<String, String> {
+        let mut answers = self.answers.lock().unwrap();
+        if answers.is_empty() {
+            return Err(format!("no scripted answer left for prompt `{prompt}`"));
+        }
+        Ok(answers.remove(0))
+    }
+}
+
+impl ScriptedInstallPrompts {
     pub fn new(answers: &[&str]) -> Self {
         Self {
             answers: Mutex::new(answers.iter().map(|answer| (*answer).to_string()).collect()),
@@ -76,6 +97,43 @@ impl SyncPrompts for ScriptedSyncPrompts {
             return Err("binary list cannot be empty".to_string());
         }
         Ok(PromptInput::Value(binaries))
+    }
+}
+
+impl InstallPrompts for ScriptedInstallPrompts {
+    fn select_binaries(&self, _package: &str, candidates: &[String]) -> Result<Vec<String>, String> {
+        let answer = self.next_answer("select_binaries")?;
+        let trimmed = answer.trim();
+        if trimmed.is_empty() {
+            return Err("binary selection cannot be empty".to_string());
+        }
+
+        let mut selected = Vec::new();
+        for token in trimmed.split(',') {
+            let index = token.trim();
+            if index.is_empty() {
+                return Err("binary selection cannot be empty".to_string());
+            }
+            let candidate_index = index.parse::<usize>().ok();
+            let candidate = candidate_index
+                .and_then(|value| value.checked_sub(1))
+                .and_then(|value| candidates.get(value))
+                .cloned();
+            match candidate {
+                Some(value) => {
+                    if !selected.contains(&value) {
+                        selected.push(value);
+                    }
+                }
+                None => return Err(format!("selected binary `{index}` was not found")),
+            }
+        }
+
+        if selected.is_empty() {
+            return Err("binary selection cannot be empty".to_string());
+        }
+
+        Ok(selected)
     }
 }
 
@@ -164,6 +222,55 @@ pub fn seed_install_fixture(paths: &HivePaths, package: &str, version: &str) {
         &archive_path,
         &checksum,
         package,
+        "tar.gz",
+    );
+}
+
+pub fn seed_install_fixture_without_binaries(
+    paths: &HivePaths,
+    package: &str,
+    version: &str,
+    binaries_in_archive: &[&str],
+) {
+    let source_dir = paths.state_dir.join("fixture-source");
+    fs::create_dir_all(&source_dir).unwrap();
+
+    let mut files = Vec::new();
+    for binary in binaries_in_archive {
+        let source_path = source_dir.join(binary);
+        if let Some(parent) = source_path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&source_path, "stub-binary").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&source_path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&source_path, permissions).unwrap();
+        }
+        files.push((source_path, *binary));
+    }
+
+    fs::create_dir_all(&paths.state_dir).unwrap();
+    let archive_path = paths.state_dir.join(format!("{package}-{version}.tar.gz"));
+    let file_refs = files
+        .iter()
+        .map(|(source_path, archive_path_name)| (source_path.as_path(), *archive_path_name))
+        .collect::<Vec<_>>();
+    write_tar_gz_files(&archive_path, &file_refs);
+
+    let checksum = format!(
+        "sha256:{:x}",
+        Sha256::digest(fs::read(&archive_path).unwrap())
+    );
+    write_manifest_with_binaries_with_archive(
+        paths,
+        package,
+        version,
+        &archive_path,
+        &checksum,
+        &[],
         "tar.gz",
     );
 }
